@@ -1,0 +1,8 @@
+{
+  "watch": ["server.js", "routes/", "utils/", "config.js"],
+  "ignore": ["node_modules/", "sessions/", "output/", "public/"],
+  "delay": 1000,
+  "env": {
+    "NODE_ENV": "development"
+  }
+}

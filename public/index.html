@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bike Trail Processor</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+    <div class="container">
+        <h1>🚴‍♂️ Bike Trail Image Processor</h1>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="sessionSelect">Select Session:</label>
+                <select id="sessionSelect">
+                    <option value="">Choose a session...</option>
+                </select>
+                <button id="loadBtn">Load Session</button>
+            </div>
+            
+            <div class="session-info" id="sessionInfo" style="display: none;">
+                <p>Images: <span id="imageCount">0</span></p>
+                <button id="startBtn">Start Processing</button>
+                <button id="pauseBtn" style="display: none;">Pause</button>
+            </div>
+        </div>
+
+        <div class="progress-container" id="progressContainer" style="display: none;">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <p class="progress-text" id="progressText">0 / 0</p>
+        </div>
+
+        <div class="cache-management">
+            <details>
+                <summary>📦 Tile Cache Management</summary>
+                <div class="cache-controls">
+                    <div class="tile-status" id="tileStatus" style="display: none;">
+                        <div class="alert alert-warning">
+                            <strong>⚠️ OSM Tile Access Issues:</strong>
+                            <span id="tileStatusMessage"></span>
+                            <details style="margin-top: 10px;">
+                                <summary>Solutions:</summary>
+                                <ul style="margin: 5px 0; padding-left: 20px;">
+                                    <li>Wait a few minutes and refresh the page</li>
+                                    <li>Clear your tile cache and try again</li>
+                                    <li>Use preload function during off-peak hours</li>
+                                    <li>Consider using your own tile server for heavy usage</li>
+                                </ul>
+                            </details>
+                        </div>
+                    </div>
+                    <div class="cache-stats" id="cacheStats">
+                        <p>Loading cache stats...</p>
+                    </div>
+                    <div class="cache-buttons">
+                        <button id="refreshCacheBtn">Refresh Stats</button>
+                        <button id="clearCacheBtn" class="danger">Clear All Cache</button>
+                        <button id="preloadBtn">Preload Current Routes</button>
+                    </div>
+                </div>
+            </details>
+        </div>
+
+        <div class="canvas-container">
+            <canvas id="canvas" width="2560" height="1440"></canvas>
+            
+            <div class="map-previews">
+                <div class="map-preview">
+                    <h4>Route Overview</h4>
+                    <div id="routeMap" class="leaflet-map"></div>
+                    <canvas id="routeMapCanvas" width="600" height="400" style="display: none;"></canvas>
+                </div>
+                <div class="map-preview">
+                    <h4>Detail View</h4>
+                    <div id="detailMap" class="leaflet-map"></div>
+                    <canvas id="detailMapCanvas" width="600" height="400" style="display: none;"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

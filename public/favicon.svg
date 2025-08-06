@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Back wheel -->
+  <circle cx="8" cy="20" r="6" fill="none" stroke="#333" stroke-width="2"/>
+  <circle cx="8" cy="20" r="1" fill="#333"/>
+  
+  <!-- Front wheel -->
+  <circle cx="24" cy="20" r="6" fill="none" stroke="#333" stroke-width="2"/>
+  <circle cx="24" cy="20" r="1" fill="#333"/>
+  
+  <!-- Frame -->
+  <path d="M8 20 L16 12 L24 20" fill="none" stroke="#3498db" stroke-width="2"/>
+  <path d="M16 12 L16 8" fill="none" stroke="#3498db" stroke-width="2"/>
+  <path d="M14 20 L18 20" fill="none" stroke="#3498db" stroke-width="2"/>
+  <path d="M8 20 L16 20" fill="none" stroke="#3498db" stroke-width="2"/>
+  
+  <!-- Handlebars -->
+  <path d="M14 8 L18 8" fill="none" stroke="#333" stroke-width="2"/>
+  
+  <!-- Seat -->
+  <path d="M14 12 L18 12" fill="none" stroke="#333" stroke-width="2"/>
+  
+  <!-- Pedals -->
+  <circle cx="16" cy="20" r="1.5" fill="#e74c3c"/>
+</svg>
