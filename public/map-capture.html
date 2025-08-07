@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Map Capture</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        .bike-icon-flipped img {
+            transform: scaleX(-1);
+        }
+        .bike-icon-normal img {
+            transform: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="map-container">
+        <div id="routeMap" class="leaflet-map"></div>
+        <div id="detailMap" class="leaflet-map"></div>
+    </div>
+    
+    <div class="coordinates-display">
+        <p>Lat: <span id="latDisplay">--</span> | Lon: <span id="lonDisplay">--</span> | Bearing: <span id="bearingDisplay">--</span>°</p>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize maps when parent tells us to
+        window.initializeMaps = function() {
+            window.routeMap = L.map('routeMap', { zoomControl: false }).setView([33.4484, -112.0740], 10);
+            window.detailMap = L.map('detailMap', { zoomControl: false }).setView([33.4484, -112.0740], 17);
+            
+            L.tileLayer('/api/tiles/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(window.routeMap);
+            
+            L.tileLayer('/api/tiles/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(window.detailMap);
+            
+            // Set up event listeners for when maps are ready
+            window.setupMapReadyEvents();
+            
+            // Set initial coordinates display
+            document.getElementById('latDisplay').textContent = '33.448400';
+            document.getElementById('lonDisplay').textContent = '-112.074000';
+            document.getElementById('bearingDisplay').textContent = '90';
+            
+            // Send map div coordinates back to parent (with delay to ensure elements are fully rendered)
+            setTimeout(() => {
+                window.sendMapCoordinates();
+                
+                // Notify parent that popup is ready for data
+                if (window.opener) {
+                    window.opener.postMessage({
+                        type: 'popupReady'
+                    }, '*');
+                    console.log('✅ Notified parent that popup is ready');
+                }
+            }, 200);
+            
+            return { routeMap: window.routeMap, detailMap: window.detailMap };
+        };
+        
+        // Auto-initialize maps when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🚀 DOM loaded, initializing maps...');
+            // Small delay to ensure Leaflet is loaded
+            setTimeout(() => {
+                window.initializeMaps();
+            }, 100);
+        });
+        
+        // Set up event listeners to detect when maps are ready
+        window.setupMapReadyEvents = function() {
+            let detailMapReady = false;
+            let routeMapReady = false;
+            
+            // Listen for when detail map finishes moving/loading
+            window.detailMap.on('moveend', function() {
+                detailMapReady = true;
+                window.checkBothMapsReady('detailMoveEnd');
+            });
+            
+            window.detailMap.on('load', function() {
+                detailMapReady = true;
+                window.checkBothMapsReady('detailLoad');
+            });
+            
+            // Listen for when route map finishes moving/loading  
+            window.routeMap.on('moveend', function() {
+                routeMapReady = true;
+                window.checkBothMapsReady('routeMoveEnd');
+            });
+            
+            window.routeMap.on('load', function() {
+                routeMapReady = true;
+                window.checkBothMapsReady('routeLoad');
+            });
+            
+            // Reset flags when we start a new update
+            window.resetMapReadyFlags = function() {
+                detailMapReady = false;
+                routeMapReady = false;
+            };
+            
+            window.checkBothMapsReady = function(eventType) {
+                if (detailMapReady && routeMapReady) {
+                    console.log(`📸 Both maps ready after ${eventType}`);
+                    updateSequenceStarted = false; // Reset for next update
+                    window.notifyMapReady(eventType);
+                }
+            };
+        };
+        
+        // Function to calculate and send map div coordinates to parent
+        window.sendMapCoordinates = function() {
+            try {
+                const routeMapDiv = document.getElementById('routeMap');
+                const detailMapDiv = document.getElementById('detailMap');
+                
+                if (routeMapDiv && detailMapDiv) {
+                    // Get bounding rectangles relative to the viewport/window
+                    const routeBounds = routeMapDiv.getBoundingClientRect();
+                    const detailBounds = detailMapDiv.getBoundingClientRect();
+                    
+                    const mapCoordinates = {
+                        routeMap: {
+                            left: Math.round(routeBounds.left),
+                            top: Math.round(routeBounds.top), 
+                            width: Math.round(routeBounds.width),
+                            height: Math.round(routeBounds.height),
+                            right: Math.round(routeBounds.right),
+                            bottom: Math.round(routeBounds.bottom)
+                        },
+                        detailMap: {
+                            left: Math.round(detailBounds.left),
+                            top: Math.round(detailBounds.top),
+                            width: Math.round(detailBounds.width), 
+                            height: Math.round(detailBounds.height),
+                            right: Math.round(detailBounds.right),
+                            bottom: Math.round(detailBounds.bottom)
+                        }
+                    };
+                    
+                    console.log('📍 Map div coordinates:');
+                    console.log('  routeMap:', mapCoordinates.routeMap);
+                    console.log('  detailMap:', mapCoordinates.detailMap);
+                    console.log('📍 Window.opener exists:', !!window.opener);
+                    
+                    // Send coordinates to opener window (popup uses opener, not parent)
+                    if (window.opener) {
+                        window.opener.postMessage({
+                            type: 'mapCoordinates',
+                            coordinates: mapCoordinates
+                        }, '*');
+                        console.log('📍 Coordinates sent to opener window');
+                    } else {
+                        console.warn('No opener window found to send coordinates to');
+                    }
+                } else {
+                    console.warn('Could not find routeMap or detailMap divs');
+                }
+            } catch (error) {
+                console.warn('Could not send map coordinates:', error);
+            }
+        };
+        
+        // Debug function - can be called from console
+        window.debugSendCoordinates = function() {
+            console.log('Manual coordinate send triggered');
+            window.sendMapCoordinates();
+        };
+        
+        // Notify parent window that maps are ready for screenshot
+        window.notifyMapReady = function(updateType) {
+            try {
+                if (window.opener) {
+                    window.opener.postMessage({
+                        type: 'mapReady',
+                        updateType: updateType,
+                        timestamp: Date.now()
+                    }, '*');
+                    console.log(`📸 Notified parent: maps ready for screenshot after ${updateType}`);
+                } else {
+                    console.warn('No opener window found to notify map ready');
+                }
+            } catch (error) {
+                console.warn('Could not notify map ready:', error);
+            }
+        };
+        
+        // Track if we're in the middle of an update sequence
+        let updateSequenceStarted = false;
+        
+        // Track current direction to prevent flickering
+        let currentDirection = 'east'; // 'east' or 'west'
+        
+        // Function to determine direction with hysteresis
+        window.updateDirection = function(bearing) {
+            let newDirection = currentDirection;
+            
+            console.log(`🧭 Direction logic: bearing=${bearing}°, current=${currentDirection}`);
+            
+            if (currentDirection === 'east') {
+                // Switch to west if bearing has westward component (190° to 360°)
+                if (bearing >= 190) {
+                    newDirection = 'west';
+                    console.log(`🔄 Switching from east to west (${bearing}° >= 190°)`);
+                }
+            } else {
+                // Switch to east if bearing has eastward component (0° to 170°)  
+                if (bearing <= 170) {
+                    newDirection = 'east';
+                    console.log(`🔄 Switching from west to east (${bearing}° <= 170°)`);
+                }
+            }
+            // 170° to 190° (north/south) keeps current direction
+            
+            if (newDirection === currentDirection) {
+                console.log(`↔️ Keeping current direction: ${currentDirection}`);
+            }
+            
+            currentDirection = newDirection;
+            console.log(`🎯 Final direction: ${currentDirection}, isWest: ${currentDirection === 'west'}`);
+            return currentDirection === 'west';
+        };
+
+        // Listen for messages from parent window
+        window.addEventListener('message', function(event) {
+            console.log('🔄 Popup received message:', event.data);
+            const { type, routeCoords, lat, lon, bearing } = event.data;
+            
+            // Debug bearing specifically
+            if (bearing !== undefined) {
+                console.log(`📐 Popup received bearing: ${bearing}°`);
+            }
+            
+            // Calculate direction once if bearing is provided
+            let isGoingWest = false;
+            if (bearing !== undefined && bearing !== null) {
+                isGoingWest = window.updateDirection(bearing);
+                console.log(`Bearing: ${bearing}°, Direction: ${currentDirection}, Flipped: ${isGoingWest}`);
+            }
+            
+            switch(type) {
+                case 'updateRoute':
+                    console.log('Updating route with', routeCoords.length, 'points');
+                    if (window.routePolyline) window.routeMap.removeLayer(window.routePolyline);
+                    window.routePolyline = L.polyline(routeCoords, { color: '#e74c3c', weight: 3 }).addTo(window.routeMap);
+                    
+                    const bounds = L.latLngBounds(routeCoords);
+                    window.routeMap.fitBounds(bounds, { padding: [10, 10] });
+                    console.log('Route updated, bounds:', bounds.toBBoxString());
+                    break;
+                    
+                case 'updateDetailPosition':
+                    console.log('Updating detail position to:', lat, lon);
+                    
+                    // Reset ready flags at the start of update sequence
+                    if (!updateSequenceStarted) {
+                        updateSequenceStarted = true;
+                        window.resetMapReadyFlags();
+                        console.log('🔄 Started map update sequence');
+                    }
+                    
+                    window.detailMap.setView([lat, lon], 17);
+                    if (window.detailMarker) window.detailMap.removeLayer(window.detailMarker);
+                    
+                    
+                    const bikeIcon = L.icon({
+                        iconUrl: '/images/luis_bike_100.png',
+                        iconSize: [50, 50],
+                        iconAnchor: [25, 25],
+                        className: isGoingWest ? 'bike-icon-flipped' : 'bike-icon-normal'
+                    });
+                    
+                    window.detailMarker = L.marker([lat, lon], { icon: bikeIcon }).addTo(window.detailMap);
+                    console.log('Detail position updated, waiting for moveend events...');
+                    
+                    // Update coordinate display
+                    document.getElementById('latDisplay').textContent = lat.toFixed(6);
+                    document.getElementById('lonDisplay').textContent = lon.toFixed(6);
+                    document.getElementById('bearingDisplay').textContent = bearing ? bearing.toFixed(1) : '--';
+                    break;
+                    
+                case 'updateRouteMarker':
+                    console.log('Updating route marker to:', lat, lon);
+                    if (window.routeMarker) window.routeMap.removeLayer(window.routeMarker);
+                    
+                    
+                    const routeBikeIcon = L.icon({
+                        iconUrl: '/images/luis_bike_100.png',
+                        iconSize: [35, 35],
+                        iconAnchor: [17, 17],
+                        className: isGoingWest ? 'bike-icon-flipped' : 'bike-icon-normal'
+                    });
+                    
+                    window.routeMarker = L.marker([lat, lon], { icon: routeBikeIcon }).addTo(window.routeMap);
+                    console.log('Route marker updated');
+                    
+                    // Update coordinate display
+                    document.getElementById('latDisplay').textContent = lat.toFixed(6);
+                    document.getElementById('lonDisplay').textContent = lon.toFixed(6);
+                    document.getElementById('bearingDisplay').textContent = bearing ? bearing.toFixed(1) : '--';
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>

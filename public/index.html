@@ -69,18 +69,9 @@
         <div class="canvas-container">
             <canvas id="canvas" width="2560" height="1440"></canvas>
             
-            <div class="map-previews">
-                <div class="map-preview">
-                    <h4>Route Overview</h4>
-                    <div id="routeMap" class="leaflet-map"></div>
-                    <canvas id="routeMapCanvas" width="600" height="400" style="display: none;"></canvas>
-                </div>
-                <div class="map-preview">
-                    <h4>Detail View</h4>
-                    <div id="detailMap" class="leaflet-map"></div>
-                    <canvas id="detailMapCanvas" width="600" height="400" style="display: none;"></canvas>
-                </div>
-            </div>
+            <!-- Hidden canvases for compositing -->
+            <canvas id="routeMapCanvas" width="600" height="400" style="display: none;"></canvas>
+            <canvas id="detailMapCanvas" width="600" height="400" style="display: none;"></canvas>
         </div>
     </div>
 

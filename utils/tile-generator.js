@@ -112,7 +112,7 @@ class TileGenerator {
     
     // Draw route data if provided
     if (routeData && routeData.length > 0) {
-      ctx.strokeStyle = '#3498db';
+      ctx.strokeStyle = '#e74c3c';
       ctx.lineWidth = 3;
       ctx.beginPath();
       
