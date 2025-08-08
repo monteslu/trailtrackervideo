@@ -351,6 +351,22 @@ class BikeTrailProcessor {
         const scaledWidth = 900;
         const scaledHeight = 600;
         
+        // Create an off-screen canvas to apply the fade effect
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = scaledWidth;
+        tempCanvas.height = scaledHeight;
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        // Draw the map to the temp canvas, stretching from 450x300 to scaledWidth x scaledHeight
+        tempCtx.drawImage(
+            this.routeMapCanvas,        // source canvas (450x300)
+            0, 0, 450, 300,            // source rectangle (full 450x300)
+            0, 0, scaledWidth, scaledHeight  // destination rectangle (stretch to 900x600)
+        );
+        
+        // Apply fade effect to the temp canvas
+        this.applyFadeToCanvas(tempCtx, scaledWidth, scaledHeight);
+        
         // Save context for clipping
         this.ctx.save();
         
@@ -359,17 +375,10 @@ class BikeTrailProcessor {
         this.createRoundedRectPath(pos.x, pos.y, scaledWidth, scaledHeight, radius);
         this.ctx.clip();
         
-        // Draw the captured route map canvas stretched from 450x300 to scaledWidth x scaledHeight
-        this.ctx.drawImage(
-            this.routeMapCanvas,        // source canvas (450x300)
-            0, 0, 450, 300,            // source rectangle (full cropped canvas)
-            pos.x, pos.y, scaledWidth, scaledHeight  // destination rectangle (stretched)
-        );
+        // Draw the faded map to the main canvas
+        this.ctx.drawImage(tempCanvas, pos.x, pos.y);
         
         this.ctx.restore();
-        
-        // Now add transparency fade effect over the entire map area
-        this.addFadeEffect(pos.x, pos.y, scaledWidth, scaledHeight);
     }
 
     async drawDetailView(pos, width, height, imageData) {
@@ -379,6 +388,22 @@ class BikeTrailProcessor {
         const scaledWidth = 900;
         const scaledHeight = 600;
         
+        // Create an off-screen canvas to apply the fade effect
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = scaledWidth;
+        tempCanvas.height = scaledHeight;
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        // Draw the map to the temp canvas, stretching from 450x300 to scaledWidth x scaledHeight
+        tempCtx.drawImage(
+            this.detailMapCanvas,       // source canvas (450x300)
+            0, 0, 450, 300,            // source rectangle (full 450x300)
+            0, 0, scaledWidth, scaledHeight  // destination rectangle (stretch to 900x600)
+        );
+        
+        // Apply fade effect to the temp canvas
+        this.applyFadeToCanvas(tempCtx, scaledWidth, scaledHeight);
+        
         // Save context for clipping
         this.ctx.save();
         
@@ -387,17 +412,10 @@ class BikeTrailProcessor {
         this.createRoundedRectPath(pos.x, pos.y, scaledWidth, scaledHeight, radius);
         this.ctx.clip();
         
-        // Draw the captured detail map canvas stretched from 450x300 to scaledWidth x scaledHeight
-        this.ctx.drawImage(
-            this.detailMapCanvas,       // source canvas (450x300)
-            0, 0, 450, 300,            // source rectangle (full cropped canvas)
-            pos.x, pos.y, scaledWidth, scaledHeight  // destination rectangle (stretched)
-        );
+        // Draw the faded map to the main canvas
+        this.ctx.drawImage(tempCanvas, pos.x, pos.y);
         
         this.ctx.restore();
-        
-        // Now add transparency fade effect over the entire map area
-        this.addFadeEffect(pos.x, pos.y, scaledWidth, scaledHeight);
     }
     
     createRoundedRectPath(x, y, width, height, radius) {
@@ -430,47 +448,43 @@ class BikeTrailProcessor {
         }
     }
     
-    addFadeEffect(x, y, width, height) {
-        // Create mask for rounded rectangle fade
-        this.ctx.save();
-        this.ctx.globalCompositeOperation = 'destination-out';
+    applyFadeToCanvas(ctx, width, height) {
+        // Apply transparency gradient to an isolated canvas
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
         
-        // Create gradient mask - black removes pixels, transparent keeps them
-        const centerX = x + width / 2;
-        const centerY = y + height / 2;
-        const fadeWidth = width * 0.3; // Fade zone width
-        
-        // Create rectangular fade zones on all edges
-        const gradient = this.ctx.createLinearGradient(x, centerY, x + fadeWidth, centerY);
-        gradient.addColorStop(0, 'rgba(0, 0, 0, 1)');     // Remove at edge
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');     // Keep at center
+        const fadeWidth = width * 0.07; // Fade zone width
+        const fadeHeight = height * 0.07; // Fade zone height
         
         // Left edge fade
-        this.ctx.fillStyle = gradient;
-        this.ctx.fillRect(x, y, fadeWidth, height);
+        const leftGradient = ctx.createLinearGradient(0, 0, fadeWidth, 0);
+        leftGradient.addColorStop(0, 'rgba(0, 0, 0, 1)'); // Remove at edge
+        leftGradient.addColorStop(1, 'rgba(0, 0, 0, 0)'); // Keep at center
+        ctx.fillStyle = leftGradient;
+        ctx.fillRect(0, 0, fadeWidth, height);
         
-        // Right edge fade 
-        const rightGradient = this.ctx.createLinearGradient(x + width - fadeWidth, centerY, x + width, centerY);
+        // Right edge fade
+        const rightGradient = ctx.createLinearGradient(width - fadeWidth, 0, width, 0);
         rightGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
         rightGradient.addColorStop(1, 'rgba(0, 0, 0, 1)');
-        this.ctx.fillStyle = rightGradient;
-        this.ctx.fillRect(x + width - fadeWidth, y, fadeWidth, height);
+        ctx.fillStyle = rightGradient;
+        ctx.fillRect(width - fadeWidth, 0, fadeWidth, height);
         
         // Top edge fade
-        const topGradient = this.ctx.createLinearGradient(centerX, y, centerX, y + fadeWidth);
+        const topGradient = ctx.createLinearGradient(0, 0, 0, fadeHeight);
         topGradient.addColorStop(0, 'rgba(0, 0, 0, 1)');
         topGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        this.ctx.fillStyle = topGradient;
-        this.ctx.fillRect(x, y, width, fadeWidth);
+        ctx.fillStyle = topGradient;
+        ctx.fillRect(0, 0, width, fadeHeight);
         
         // Bottom edge fade
-        const bottomGradient = this.ctx.createLinearGradient(centerX, y + height - fadeWidth, centerX, y + height);
+        const bottomGradient = ctx.createLinearGradient(0, height - fadeHeight, 0, height);
         bottomGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
         bottomGradient.addColorStop(1, 'rgba(0, 0, 0, 1)');
-        this.ctx.fillStyle = bottomGradient;
-        this.ctx.fillRect(x, y + height - fadeWidth, width, fadeWidth);
+        ctx.fillStyle = bottomGradient;
+        ctx.fillRect(0, height - fadeHeight, width, fadeHeight);
         
-        this.ctx.restore();
+        ctx.restore();
     }
 
     async captureMapAsImage(map, width, height) {
