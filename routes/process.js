@@ -6,11 +6,8 @@ const { extractMetadata, getTimestampFromFilename } = require('../utils/xmp');
 const https = require('https');
 const http = require('http');
 const TileCache = require('../utils/tile-cache');
-const TileGenerator = require('../utils/tile-generator');
-
 const router = express.Router();
 const tileCache = new TileCache();
-const tileGenerator = new TileGenerator();
 
 // Rate limiting for OSM requests
 const tileRequestQueue = [];
@@ -325,21 +322,9 @@ router.get('/tiles/:z/:x/:y.png', async (req, res) => {
       console.log(`Alternative sources failed for ${z}/${x}/${y}, generating locally`);
     }
 
-    // Fallback to local generation
-    try {
-      const routeData = null;
-      const tileBuffer = await tileGenerator.generateTile(xNum, yNum, zNum, routeData);
-      
-      await fs.mkdir(cacheDir, { recursive: true });
-      await fs.writeFile(cachePath, tileBuffer);
-      console.log(`Generated and cached tile: ${z}/${x}/${y}`);
-      
-      res.send(tileBuffer);
-      
-    } catch (error) {
-      console.error(`All tile sources failed for ${z}/${x}/${y}:`, error.message);
-      res.status(500).send('Tile generation failed');
-    }
+    // All external tile sources failed - return error
+    console.error(`All external tile sources failed for ${z}/${x}/${y}`);
+    res.status(503).send('All tile sources unavailable');
     
   } catch (error) {
     console.error('Tile route error:', error);
