@@ -357,6 +357,11 @@ class BikeTrailProcessor {
         tempCanvas.height = scaledHeight;
         const tempCtx = tempCanvas.getContext('2d');
         
+        // Apply rounded corner clipping to temp canvas first
+        const radius = 50;
+        this.createRoundedRectPathOnContext(tempCtx, 0, 0, scaledWidth, scaledHeight, radius);
+        tempCtx.clip();
+        
         // Draw the map to the temp canvas, stretching from 450x300 to scaledWidth x scaledHeight
         tempCtx.drawImage(
             this.routeMapCanvas,        // source canvas (450x300)
@@ -367,18 +372,8 @@ class BikeTrailProcessor {
         // Apply fade effect to the temp canvas
         this.applyFadeToCanvas(tempCtx, scaledWidth, scaledHeight);
         
-        // Save context for clipping
-        this.ctx.save();
-        
-        // Create rounded rectangle clipping path
-        const radius = 30; // Fixed radius for visible rounded corners
-        this.createRoundedRectPath(pos.x, pos.y, scaledWidth, scaledHeight, radius);
-        this.ctx.clip();
-        
-        // Draw the faded map to the main canvas
+        // Draw the faded map to the main canvas (already rounded and faded)
         this.ctx.drawImage(tempCanvas, pos.x, pos.y);
-        
-        this.ctx.restore();
     }
 
     async drawDetailView(pos, width, height, imageData) {
@@ -394,6 +389,11 @@ class BikeTrailProcessor {
         tempCanvas.height = scaledHeight;
         const tempCtx = tempCanvas.getContext('2d');
         
+        // Apply rounded corner clipping to temp canvas first
+        const radius = 50;
+        this.createRoundedRectPathOnContext(tempCtx, 0, 0, scaledWidth, scaledHeight, radius);
+        tempCtx.clip();
+        
         // Draw the map to the temp canvas, stretching from 450x300 to scaledWidth x scaledHeight
         tempCtx.drawImage(
             this.detailMapCanvas,       // source canvas (450x300)
@@ -404,18 +404,8 @@ class BikeTrailProcessor {
         // Apply fade effect to the temp canvas
         this.applyFadeToCanvas(tempCtx, scaledWidth, scaledHeight);
         
-        // Save context for clipping
-        this.ctx.save();
-        
-        // Create rounded rectangle clipping path
-        const radius = 30; // Fixed radius for visible rounded corners
-        this.createRoundedRectPath(pos.x, pos.y, scaledWidth, scaledHeight, radius);
-        this.ctx.clip();
-        
-        // Draw the faded map to the main canvas
+        // Draw the faded map to the main canvas (already rounded and faded)
         this.ctx.drawImage(tempCanvas, pos.x, pos.y);
-        
-        this.ctx.restore();
     }
     
     createRoundedRectPath(x, y, width, height, radius) {
@@ -445,6 +435,36 @@ class BikeTrailProcessor {
             this.ctx.arcTo(x, y, x + radius, y, radius);
             
             this.ctx.closePath();
+        }
+    }
+    
+    createRoundedRectPathOnContext(ctx, x, y, width, height, radius) {
+        // Create rounded rectangle path on any canvas context
+        if (ctx.roundRect) {
+            ctx.beginPath();
+            ctx.roundRect(x, y, width, height, radius);
+        } else {
+            // Manual rounded rectangle path
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            
+            // Top side and top-right corner
+            ctx.lineTo(x + width - radius, y);
+            ctx.arcTo(x + width, y, x + width, y + radius, radius);
+            
+            // Right side and bottom-right corner
+            ctx.lineTo(x + width, y + height - radius);
+            ctx.arcTo(x + width, y + height, x + width - radius, y + height, radius);
+            
+            // Bottom side and bottom-left corner
+            ctx.lineTo(x + radius, y + height);
+            ctx.arcTo(x, y + height, x, y + height - radius, radius);
+            
+            // Left side and top-left corner
+            ctx.lineTo(x, y + radius);
+            ctx.arcTo(x, y, x + radius, y, radius);
+            
+            ctx.closePath();
         }
     }
     
