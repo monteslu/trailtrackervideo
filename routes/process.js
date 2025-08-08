@@ -143,13 +143,24 @@ router.get('/session/:name', async (req, res) => {
   try {
     const sessionName = req.params.name;
     const sessionPath = path.join(config.ROOT_DIR, sessionName);
+    const cacheFile = path.join(sessionPath, 'xmp.json');
+    
+    // Check if cache file exists
+    try {
+      const cacheData = await fs.readFile(cacheFile, 'utf-8');
+      const cached = JSON.parse(cacheData);
+      console.log(`Using cached XMP data for session ${sessionName} (${cached.images.length} images)`);
+      return res.json(cached);
+    } catch (cacheError) {
+      console.log(`No cache found for session ${sessionName}, processing XMP data...`);
+    }
     
     const files = await fs.readdir(sessionPath);
     const imageFiles = files.filter(file => 
       file.toLowerCase().endsWith('.jpg') || file.toLowerCase().endsWith('.jpeg')
     );
 
-    console.log(`Found ${imageFiles.length} image files in session ${sessionName}`);
+    console.log(`Processing XMP data for ${imageFiles.length} image files in session ${sessionName}`);
 
     const images = [];
     let processedCount = 0;
@@ -179,12 +190,21 @@ router.get('/session/:name', async (req, res) => {
 
     images.sort((a, b) => a.timestamp - b.timestamp);
 
-    console.log(`Returning ${images.length} images with metadata`);
-
-    res.json({
+    const result = {
       count: images.length,
       images
-    });
+    };
+
+    // Save cache file
+    try {
+      await fs.writeFile(cacheFile, JSON.stringify(result, null, 2));
+      console.log(`Cached XMP data for session ${sessionName}`);
+    } catch (writeError) {
+      console.warn('Failed to write XMP cache:', writeError);
+    }
+
+    console.log(`Returning ${images.length} images with metadata`);
+    res.json(result);
   } catch (error) {
     console.error('Error processing session:', error);
     res.status(500).json({ error: 'Failed to process session' });
