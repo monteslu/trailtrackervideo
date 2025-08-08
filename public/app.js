@@ -10,6 +10,7 @@ class BikeTrailProcessor {
         this.altitudeRange = { min: 0, max: 0 };
         this.bikeIcon = null;
         this.routeMap = null;
+        this.lastValidBearing = 90; // Default to east
         this.detailMap = null;
         this.routeMapCanvas = null;
         this.detailMapCanvas = null;
@@ -96,7 +97,7 @@ class BikeTrailProcessor {
             this.bikeIcon = new Image();
             this.bikeIcon.onload = resolve;
             this.bikeIcon.onerror = resolve; // Continue even if image fails to load
-            this.bikeIcon.src = '/images/luis_bike_100.png';
+            this.bikeIcon.src = '/images/luis_bike_100_east.png';
         });
     }
 
@@ -283,9 +284,6 @@ class BikeTrailProcessor {
             // Update detail map position (maps are now in popup)
             this.updateDetailMapPosition(imageData);
             
-            // Wait for maps to settle and be ready for screenshot
-            await this.waitForMapReady();
-            
             console.log(`Processing image ${index}: lat=${imageData.lat}, lon=${imageData.lon}`);
             
             // Capture iframe maps to hidden canvases
@@ -297,7 +295,9 @@ class BikeTrailProcessor {
                 this.canvas.toBlob(resolve, 'image/jpeg', 0.9);
             });
             
-            await this.uploadImage(blob, imageData.timestamp);
+            this.uploadImage(blob, imageData.timestamp).catch(error => {
+                console.error('Upload failed for timestamp', imageData.timestamp, error);
+            });
             
         } catch (error) {
             console.error('Error processing image:', error);
@@ -323,11 +323,12 @@ class BikeTrailProcessor {
         const mapHeight = Math.floor(mapWidth * 400/600); // Exact 600:400 aspect ratio
         
         // Account for 125% scaling - maps will be 25% larger
-        const scaledMapWidth = Math.floor(mapWidth * 1.25);
-        const scaledMapHeight = Math.floor(mapHeight * 1.25);
+        // Maps are now 900x600, so position them accordingly
+        const actualMapWidth = 900;
+        const actualMapHeight = 600;
         
-        const bottomLeft = { x: margin, y: this.canvas.height - scaledMapHeight - margin };
-        const bottomRight = { x: this.canvas.width - scaledMapWidth - margin, y: this.canvas.height - scaledMapHeight - margin };
+        const bottomLeft = { x: margin, y: this.canvas.height - actualMapHeight - margin };
+        const bottomRight = { x: this.canvas.width - actualMapWidth - margin, y: this.canvas.height - actualMapHeight - margin };
         const topRight = { x: this.canvas.width - altitudeWidth - margin, y: margin, width: altitudeWidth, height: altitudeHeight };
         
         // Skip black rectangle backgrounds - just draw altitude meter background
@@ -335,63 +336,68 @@ class BikeTrailProcessor {
         this.ctx.fillRect(topRight.x, topRight.y, altitudeWidth, altitudeHeight);
         this.ctx.strokeRect(topRight.x, topRight.y, altitudeWidth, altitudeHeight);
         
-        this.ctx.fillStyle = '#fff';
-        this.ctx.fillText('Route Map', bottomLeft.x + 10, bottomLeft.y + 20);
-        this.ctx.fillText('Detail View', bottomRight.x + 10, bottomRight.y + 20);
-        
+        // Just draw the captured map canvases with transparency gradients
         await this.drawRoutePreview(bottomLeft, mapWidth, mapHeight, imageData, index);
         await this.drawDetailView(bottomRight, mapWidth, mapHeight, imageData);
         this.drawAltitudeChart(topRight, altitudeWidth, altitudeHeight, index);
         
-        // Position bike icons for scaled maps
-        this.drawBikeIcon(bottomLeft.x + scaledMapWidth/2, bottomLeft.y + scaledMapHeight/2);
-        this.drawBikeIcon(bottomRight.x + scaledMapWidth/2, bottomRight.y + scaledMapHeight/2);
+        // Luis bike icons are already rendered inside the captured maps
     }
 
     async drawRoutePreview(pos, width, height, imageData, index) {
         if (!this.routeMapCanvas) return;
         
-        // Scale to 125% of the calculated size (25% bigger)
-        const scaledWidth = Math.floor(width * 1.25);
-        const scaledHeight = Math.floor(height * 1.25);
+        // Stretch the 450x300 crop to 900x600 on the big canvas
+        const scaledWidth = 900;
+        const scaledHeight = 600;
         
-        // Apply rounded corners with clipping
+        // Save context for clipping
         this.ctx.save();
-        const radius = Math.min(scaledWidth, scaledHeight) * 0.05;
+        
+        // Create rounded rectangle clipping path
+        const radius = 30; // Fixed radius for visible rounded corners
         this.createRoundedRectPath(pos.x, pos.y, scaledWidth, scaledHeight, radius);
         this.ctx.clip();
         
-        // Debug: Draw captured canvas actual size first to see what we're getting
-        console.log(`Route map canvas size: ${this.routeMapCanvas.width}x${this.routeMapCanvas.height}`);
-        console.log(`Drawing at position: ${pos.x}, ${pos.y} with size: ${scaledWidth}x${scaledHeight}`);
-        
-        // Draw the captured route map canvas at 125% scale
-        this.ctx.drawImage(this.routeMapCanvas, pos.x, pos.y, scaledWidth, scaledHeight);
+        // Draw the captured route map canvas stretched from 450x300 to scaledWidth x scaledHeight
+        this.ctx.drawImage(
+            this.routeMapCanvas,        // source canvas (450x300)
+            0, 0, 450, 300,            // source rectangle (full cropped canvas)
+            pos.x, pos.y, scaledWidth, scaledHeight  // destination rectangle (stretched)
+        );
         
         this.ctx.restore();
+        
+        // Now add transparency fade effect over the entire map area
+        this.addFadeEffect(pos.x, pos.y, scaledWidth, scaledHeight);
     }
 
     async drawDetailView(pos, width, height, imageData) {
         if (!this.detailMapCanvas) return;
         
-        // Scale to 125% of the calculated size (25% bigger)
-        const scaledWidth = Math.floor(width * 1.25);
-        const scaledHeight = Math.floor(height * 1.25);
+        // Stretch the 450x300 crop to 900x600 on the big canvas
+        const scaledWidth = 900;
+        const scaledHeight = 600;
         
-        // Apply rounded corners with clipping
+        // Save context for clipping
         this.ctx.save();
-        const radius = Math.min(scaledWidth, scaledHeight) * 0.05;
+        
+        // Create rounded rectangle clipping path
+        const radius = 30; // Fixed radius for visible rounded corners
         this.createRoundedRectPath(pos.x, pos.y, scaledWidth, scaledHeight, radius);
         this.ctx.clip();
         
-        // Debug: Draw captured canvas actual size first to see what we're getting
-        console.log(`Detail map canvas size: ${this.detailMapCanvas.width}x${this.detailMapCanvas.height}`);
-        console.log(`Drawing at position: ${pos.x}, ${pos.y} with size: ${scaledWidth}x${scaledHeight}`);
-        
-        // Draw the captured detail map canvas at 125% scale
-        this.ctx.drawImage(this.detailMapCanvas, pos.x, pos.y, scaledWidth, scaledHeight);
+        // Draw the captured detail map canvas stretched from 450x300 to scaledWidth x scaledHeight
+        this.ctx.drawImage(
+            this.detailMapCanvas,       // source canvas (450x300)
+            0, 0, 450, 300,            // source rectangle (full cropped canvas)
+            pos.x, pos.y, scaledWidth, scaledHeight  // destination rectangle (stretched)
+        );
         
         this.ctx.restore();
+        
+        // Now add transparency fade effect over the entire map area
+        this.addFadeEffect(pos.x, pos.y, scaledWidth, scaledHeight);
     }
     
     createRoundedRectPath(x, y, width, height, radius) {
@@ -424,29 +430,47 @@ class BikeTrailProcessor {
         }
     }
     
-    addTransparencyGradient(x, y, width, height) {
-        // Create radial gradient from center to edges for smooth blending
+    addFadeEffect(x, y, width, height) {
+        // Create mask for rounded rectangle fade
+        this.ctx.save();
+        this.ctx.globalCompositeOperation = 'destination-out';
+        
+        // Create gradient mask - black removes pixels, transparent keeps them
         const centerX = x + width / 2;
         const centerY = y + height / 2;
-        const maxRadius = Math.max(width, height) * 0.7;
+        const fadeWidth = width * 0.3; // Fade zone width
         
-        const gradient = this.ctx.createRadialGradient(
-            centerX, centerY, 0,           // Inner circle (fully opaque)
-            centerX, centerY, maxRadius    // Outer circle (transparent)
-        );
+        // Create rectangular fade zones on all edges
+        const gradient = this.ctx.createLinearGradient(x, centerY, x + fadeWidth, centerY);
+        gradient.addColorStop(0, 'rgba(0, 0, 0, 1)');     // Remove at edge
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');     // Keep at center
         
-        gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');      // Transparent center
-        gradient.addColorStop(0.6, 'rgba(0, 0, 0, 0)');   // Still transparent  
-        gradient.addColorStop(0.8, 'rgba(0, 0, 0, 0.1)'); // Slight fade
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0.3)');   // More transparent edges
-        
-        // Apply gradient overlay using multiply blend mode for subtle effect
-        this.ctx.globalCompositeOperation = 'multiply';
+        // Left edge fade
         this.ctx.fillStyle = gradient;
-        this.ctx.fillRect(x, y, width, height);
+        this.ctx.fillRect(x, y, fadeWidth, height);
         
-        // Reset blend mode
-        this.ctx.globalCompositeOperation = 'source-over';
+        // Right edge fade 
+        const rightGradient = this.ctx.createLinearGradient(x + width - fadeWidth, centerY, x + width, centerY);
+        rightGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        rightGradient.addColorStop(1, 'rgba(0, 0, 0, 1)');
+        this.ctx.fillStyle = rightGradient;
+        this.ctx.fillRect(x + width - fadeWidth, y, fadeWidth, height);
+        
+        // Top edge fade
+        const topGradient = this.ctx.createLinearGradient(centerX, y, centerX, y + fadeWidth);
+        topGradient.addColorStop(0, 'rgba(0, 0, 0, 1)');
+        topGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        this.ctx.fillStyle = topGradient;
+        this.ctx.fillRect(x, y, width, fadeWidth);
+        
+        // Bottom edge fade
+        const bottomGradient = this.ctx.createLinearGradient(centerX, y + height - fadeWidth, centerX, y + height);
+        bottomGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        bottomGradient.addColorStop(1, 'rgba(0, 0, 0, 1)');
+        this.ctx.fillStyle = bottomGradient;
+        this.ctx.fillRect(x, y + height - fadeWidth, width, fadeWidth);
+        
+        this.ctx.restore();
     }
 
     async captureMapAsImage(map, width, height) {
@@ -548,49 +572,78 @@ class BikeTrailProcessor {
             routeCoords: routeCoords
         }, '*');
         
-        // Set detail map to first GPS point
+        // Set detail map to first GPS point with bearing
         const firstPoint = gpsImages[0];
-        console.log('Setting initial detail position:', firstPoint.lat, firstPoint.lon);
+        
+        // Calculate bearing for first point
+        let bearing = 90; // Default to east
+        if (firstPoint.compass !== null && firstPoint.compass !== undefined) {
+            let rawBearing = firstPoint.compass;
+            bearing = (rawBearing + 180) % 360;
+            console.log(`First point compass: ${rawBearing}° → flipped to ${bearing}°`);
+        }
+        
+        console.log('Setting initial detail position:', firstPoint.lat, firstPoint.lon, 'bearing:', bearing);
         
         this.mapPopup.postMessage({
             type: 'updateDetailPosition',
             lat: firstPoint.lat,
-            lon: firstPoint.lon
+            lon: firstPoint.lon,
+            bearing: bearing,
+            rawCompass: firstPoint.compass
         }, '*');
     }
 
     updateDetailMapPosition(currentImage) {
         if (!currentImage || !currentImage.lat || !currentImage.lon || !this.mapPopup) return;
         
-        // Use compass data from XMP metadata if available, otherwise calculate bearing
-        let bearing = 90; // Default to east (90 degrees)
+        console.log(`Image ${currentImage.filename}: compass=${currentImage.compass}, speed=${currentImage.speed}`);
         
-        if (currentImage.compass !== null && currentImage.compass !== undefined) {
-            // Use actual compass bearing from XMP metadata
-            let rawBearing = currentImage.compass;
-            // Add 180° if camera was facing opposite direction (flip bearing)
-            bearing = (rawBearing + 180) % 360;
-            console.log(`Using XMP compass bearing: ${rawBearing}° → flipped to ${bearing}°`);
+        const currentIndex = this.images.indexOf(currentImage);
+        let bearing = 90; // Default east
+        
+        if (currentIndex === 0) {
+            // First frame: use its bearing
+            console.log(`First frame compass: ${currentImage.compass} (type: ${typeof currentImage.compass})`);
+            
+            if (currentImage.compass !== null && currentImage.compass !== undefined) {
+                bearing = currentImage.compass;
+            } else {
+                bearing = 90; // fallback
+            }
+            console.log(`First frame final bearing: ${bearing}`);
         } else {
-            // Fallback: calculate bearing from previous position
-            const currentIndex = this.images.indexOf(currentImage);
-            if (currentIndex > 0) {
-                const prevImage = this.images[currentIndex - 1];
-                if (prevImage && prevImage.lat && prevImage.lon) {
-                    bearing = this.calculateBearing(prevImage.lat, prevImage.lon, currentImage.lat, currentImage.lon);
-                    console.log(`Calculated bearing from GPS: ${bearing.toFixed(1)}°`);
+            // Subsequent frames: check velocity and find next GPS-significant frame
+            const speedMPS = currentImage.speed || 0;
+            const MIN_SPEED_MPS = 1.39; // 5 km/h = 1.39 m/s
+            const MIN_TIME_DIFF_MS = 100; // 100ms minimum between GPS points
+            
+            if (speedMPS > MIN_SPEED_MPS) {
+                // Jump ahead ~45 frames (assuming 30fps, ~1.5 seconds)
+                const targetIndex = currentIndex + 45;
+                const nextImage = this.images[targetIndex];
+                
+                if (nextImage && nextImage.lat && nextImage.lon) {
+                    bearing = this.calculateBearing(currentImage.lat, currentImage.lon, nextImage.lat, nextImage.lon);
+                } else {
+                    bearing = this.lastValidBearing || 90;
                 }
+            } else {
+                bearing = this.lastValidBearing || 90;
             }
         }
         
-        console.log(`Updating popup maps to: ${currentImage.lat}, ${currentImage.lon}, bearing: ${bearing}°`);
+        this.lastValidBearing = bearing;
         
-        // Send position update to popup via postMessage
+        console.log(`Sending bearing ${bearing}° to popup (frame ${currentIndex})`);
+        
+        // Send position update to popup
         this.mapPopup.postMessage({
             type: 'updateDetailPosition',
             lat: currentImage.lat,
             lon: currentImage.lon,
-            bearing: bearing
+            bearing: bearing,
+            rawCompass: currentIndex === 0 ? currentImage.compass || null : null
         }, '*');
         
         // Also update route marker position
@@ -598,7 +651,8 @@ class BikeTrailProcessor {
             type: 'updateRouteMarker', 
             lat: currentImage.lat,
             lon: currentImage.lon,
-            bearing: bearing
+            bearing: bearing,
+            rawCompass: currentIndex === 0 ? currentImage.compass || null : null
         }, '*');
     }
     
@@ -612,7 +666,7 @@ class BikeTrailProcessor {
         const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) - Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon);
         
         let bearing = Math.atan2(y, x) * 180 / Math.PI;
-        return (bearing + 360) % 360; // Normalize to 0-360 degrees
+        return (bearing + 360) % 360;
     }
     
     // Wait for maps to be ready after an update
@@ -827,48 +881,38 @@ class BikeTrailProcessor {
             const mapCoords = this.mapCoordinates[mapType];
             if (!mapCoords) return null;
             
-            console.log(`🖥️  Platform: ${platform.name} (${platform.os})`);
-            console.log(`📐 Device pixel ratio: ${pixelRatio}`);
-            console.log(`🏠 Window decorations - Left: ${decorationLeft}px, Top: ${decorationTop}px`);
-            console.log(`📍 ${mapType} CSS coords:`, mapCoords);
             
+            // Create smaller canvas for center crop - maintain 1.5:1 aspect ratio like original
+            const cropWidth = 450;
+            const cropHeight = 300;
             const canvas = document.createElement('canvas');
-            canvas.width = mapCoords.width;
-            canvas.height = mapCoords.height;
+            canvas.width = cropWidth;
+            canvas.height = cropHeight;
             const ctx = canvas.getContext('2d');
             
             // Try different decoration calculations
             const halfDecorationTop = Math.round(decorationTop / 2);
             
-            // Use exact coordinates provided by popup instead of adding arbitrary buffers
-            const sourceX = Math.round(mapCoords.left * pixelRatio);
-            const sourceY = Math.round((halfDecorationTop + mapCoords.top) * pixelRatio);
-            const sourceWidth = Math.round(mapCoords.width * pixelRatio);
-            const sourceHeight = Math.round(mapCoords.height * pixelRatio);
+            // Calculate center crop area - crop from center of the map element
+            const centerOffsetX = (mapCoords.width - cropWidth) / 2;
+            const centerOffsetY = (mapCoords.height - cropHeight) / 2;
+            
+            const sourceX = Math.round((decorationLeft + mapCoords.left + centerOffsetX) * pixelRatio);
+            const sourceY = Math.round((halfDecorationTop + mapCoords.top + centerOffsetY) * pixelRatio);
+            const sourceWidth = Math.round(cropWidth * pixelRatio);
+            const sourceHeight = Math.round(cropHeight * pixelRatio);
             
             // Alternative coordinates for comparison
             const sourceXWithLeftDecoration = Math.round((decorationLeft + mapCoords.left) * pixelRatio);
             const sourceYNoDecoration = Math.round(mapCoords.top * pixelRatio);
             const sourceYFullDecoration = Math.round((decorationTop + mapCoords.top) * pixelRatio);
             
-            console.log(`🎯 ${mapType} coordinates comparison:`, { 
-                current: { sourceX, sourceY, sourceWidth, sourceHeight },
-                alternatives: { 
-                    xWithLeftDecoration: sourceXWithLeftDecoration,
-                    yNoDecoration: sourceYNoDecoration,
-                    yHalfDecoration: (halfDecorationTop + mapCoords.top) * pixelRatio,
-                    yFullDecoration: sourceYFullDecoration 
-                },
-                decorationOffsets: { left: decorationLeft, top: decorationTop, half: halfDecorationTop },
-                pixelRatio,
-                platform: platform.name
-            });
             
-            // Capture specific map area from screen capture using device pixels
+            // Capture center crop area from screen capture using device pixels
             ctx.drawImage(
                 this.captureVideo,
-                sourceX, sourceY, sourceWidth, sourceHeight,  // Source rectangle in device pixels
-                0, 0, canvas.width, canvas.height              // Destination rectangle
+                sourceX, sourceY, sourceWidth, sourceHeight,  // Source rectangle (center crop)
+                0, 0, cropWidth, cropHeight                    // Destination rectangle
             );
             
             return canvas;

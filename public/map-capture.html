@@ -4,14 +4,6 @@
     <title>Map Capture</title>
     <link rel="stylesheet" href="/style.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <style>
-        .bike-icon-flipped img {
-            transform: scaleX(-1);
-        }
-        .bike-icon-normal img {
-            transform: none;
-        }
-    </style>
 </head>
 <body>
     <div class="map-container">
@@ -20,7 +12,8 @@
     </div>
     
     <div class="coordinates-display">
-        <p>Lat: <span id="latDisplay">--</span> | Lon: <span id="lonDisplay">--</span> | Bearing: <span id="bearingDisplay">--</span>°</p>
+        <p>Lat: <span id="latDisplay">--</span> | Lon: <span id="lonDisplay">--</span></p>
+        <p>Raw: <span id="rawCompassDisplay">--</span>° | Bearing: <span id="bearingDisplay">--</span>° | <span id="cardinalDisplay">--</span></p>
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -44,7 +37,9 @@
             // Set initial coordinates display
             document.getElementById('latDisplay').textContent = '33.448400';
             document.getElementById('lonDisplay').textContent = '-112.074000';
+            document.getElementById('rawCompassDisplay').textContent = '0';
             document.getElementById('bearingDisplay').textContent = '90';
+            document.getElementById('cardinalDisplay').textContent = 'E';
             
             // Send map div coordinates back to parent (with delay to ensure elements are fully rendered)
             setTimeout(() => {
@@ -196,26 +191,38 @@
         // Track current direction to prevent flickering
         let currentDirection = 'east'; // 'east' or 'west'
         
-        // Function to determine direction with hysteresis
+        // Function to determine direction with north/south deadband
         window.updateDirection = function(bearing) {
             let newDirection = currentDirection;
             
             console.log(`🧭 Direction logic: bearing=${bearing}°, current=${currentDirection}`);
             
-            if (currentDirection === 'east') {
-                // Switch to west if bearing has westward component (190° to 360°)
-                if (bearing >= 190) {
-                    newDirection = 'west';
-                    console.log(`🔄 Switching from east to west (${bearing}° >= 190°)`);
-                }
-            } else {
-                // Switch to east if bearing has eastward component (0° to 170°)  
-                if (bearing <= 170) {
+            // North deadband: 355° to 5° - don't change direction
+            if (bearing >= 355 || bearing <= 5) {
+                console.log(`🧭 North deadband (${bearing}°), keeping current direction: ${currentDirection}`);
+                return currentDirection === 'west';
+            }
+            
+            // South deadband: 175° to 185° - don't change direction  
+            if (bearing >= 175 && bearing <= 185) {
+                console.log(`🧭 South deadband (${bearing}°), keeping current direction: ${currentDirection}`);
+                return currentDirection === 'west';
+            }
+            
+            // Clear east/west zones
+            if (bearing > 5 && bearing < 175) {
+                // Eastern quadrant
+                if (currentDirection === 'west') {
                     newDirection = 'east';
-                    console.log(`🔄 Switching from west to east (${bearing}° <= 170°)`);
+                    console.log(`🔄 Switching from west to east (${bearing}°)`);
+                }
+            } else if (bearing > 185 && bearing < 355) {
+                // Western quadrant  
+                if (currentDirection === 'east') {
+                    newDirection = 'west';
+                    console.log(`🔄 Switching from east to west (${bearing}°)`);
                 }
             }
-            // 170° to 190° (north/south) keeps current direction
             
             if (newDirection === currentDirection) {
                 console.log(`↔️ Keeping current direction: ${currentDirection}`);
@@ -226,10 +233,28 @@
             return currentDirection === 'west';
         };
 
+        // Function to get cardinal direction from bearing
+        window.getCardinalDirection = function(bearing) {
+            if (bearing >= 337.5 || bearing < 22.5) return 'N';
+            if (bearing >= 22.5 && bearing < 67.5) return 'NE';
+            if (bearing >= 67.5 && bearing < 112.5) return 'E';
+            if (bearing >= 112.5 && bearing < 157.5) return 'SE';
+            if (bearing >= 157.5 && bearing < 202.5) return 'S';
+            if (bearing >= 202.5 && bearing < 247.5) return 'SW';
+            if (bearing >= 247.5 && bearing < 292.5) return 'W';
+            if (bearing >= 292.5 && bearing < 337.5) return 'NW';
+            return '--';
+        };
+
         // Listen for messages from parent window
         window.addEventListener('message', function(event) {
             console.log('🔄 Popup received message:', event.data);
-            const { type, routeCoords, lat, lon, bearing } = event.data;
+            const { type, routeCoords, lat, lon, bearing, rawCompass } = event.data;
+            
+            // Debug what we're receiving
+            if (bearing !== undefined) {
+                console.log(`📈 Bearing data: ${bearing}°, raw: ${rawCompass || 'null'}, source: ${event.data.bearingSource || 'unknown'}`);
+            }
             
             // Debug bearing specifically
             if (bearing !== undefined) {
@@ -269,10 +294,9 @@
                     
                     
                     const bikeIcon = L.icon({
-                        iconUrl: '/images/luis_bike_100.png',
+                        iconUrl: isGoingWest ? '/images/luis_bike_100_west.png' : '/images/luis_bike_100_east.png',
                         iconSize: [50, 50],
-                        iconAnchor: [25, 25],
-                        className: isGoingWest ? 'bike-icon-flipped' : 'bike-icon-normal'
+                        iconAnchor: [25, 25]
                     });
                     
                     window.detailMarker = L.marker([lat, lon], { icon: bikeIcon }).addTo(window.detailMap);
@@ -281,7 +305,9 @@
                     // Update coordinate display
                     document.getElementById('latDisplay').textContent = lat.toFixed(6);
                     document.getElementById('lonDisplay').textContent = lon.toFixed(6);
-                    document.getElementById('bearingDisplay').textContent = bearing ? bearing.toFixed(1) : '--';
+                    document.getElementById('rawCompassDisplay').textContent = rawCompass !== null && rawCompass !== undefined ? rawCompass.toFixed(1) : '--';
+                    document.getElementById('bearingDisplay').textContent = bearing !== null && bearing !== undefined ? bearing.toFixed(1) : '--';
+                    document.getElementById('cardinalDisplay').textContent = bearing !== null && bearing !== undefined ? window.getCardinalDirection(bearing) : '--';
                     break;
                     
                 case 'updateRouteMarker':
@@ -290,10 +316,9 @@
                     
                     
                     const routeBikeIcon = L.icon({
-                        iconUrl: '/images/luis_bike_100.png',
+                        iconUrl: isGoingWest ? '/images/luis_bike_100_west.png' : '/images/luis_bike_100_east.png',
                         iconSize: [35, 35],
-                        iconAnchor: [17, 17],
-                        className: isGoingWest ? 'bike-icon-flipped' : 'bike-icon-normal'
+                        iconAnchor: [17, 17]
                     });
                     
                     window.routeMarker = L.marker([lat, lon], { icon: routeBikeIcon }).addTo(window.routeMap);
@@ -302,7 +327,9 @@
                     // Update coordinate display
                     document.getElementById('latDisplay').textContent = lat.toFixed(6);
                     document.getElementById('lonDisplay').textContent = lon.toFixed(6);
-                    document.getElementById('bearingDisplay').textContent = bearing ? bearing.toFixed(1) : '--';
+                    document.getElementById('rawCompassDisplay').textContent = rawCompass !== null && rawCompass !== undefined ? rawCompass.toFixed(1) : '--';
+                    document.getElementById('bearingDisplay').textContent = bearing !== null && bearing !== undefined ? bearing.toFixed(1) : '--';
+                    document.getElementById('cardinalDisplay').textContent = bearing !== null && bearing !== undefined ? window.getCardinalDirection(bearing) : '--';
                     break;
             }
         });
