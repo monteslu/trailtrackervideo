@@ -14,6 +14,8 @@ class BikeTrailProcessor {
         this.detailMap = null;
         this.routeMapCanvas = null;
         this.detailMapCanvas = null;
+        this.altitudeUnit = localStorage.getItem('altitudeUnit') || 'ft'; // Load from localStorage or default to feet
+        this.frameInterval = parseInt(localStorage.getItem('frameInterval') || '1'); // Load from localStorage or default to every frame
         
         this.init();
     }
@@ -29,6 +31,7 @@ class BikeTrailProcessor {
         this.initializeMaps();
         await this.loadSessions();
         this.setupEventListeners();
+        this.initializeAltitudeUnit();
         await this.loadCacheStats();
     }
     
@@ -135,11 +138,42 @@ class BikeTrailProcessor {
         loadBtn.addEventListener('click', () => this.loadSession());
         document.getElementById('startBtn').addEventListener('click', () => this.startProcessing());
         document.getElementById('pauseBtn').addEventListener('click', () => this.pauseProcessing());
+        document.getElementById('altitudeUnit').addEventListener('change', (e) => {
+            this.altitudeUnit = e.target.value;
+            localStorage.setItem('altitudeUnit', this.altitudeUnit);
+        });
+        document.getElementById('frameInterval').addEventListener('change', (e) => {
+            this.frameInterval = parseInt(e.target.value);
+            localStorage.setItem('frameInterval', this.frameInterval.toString());
+            // Update the process count display when interval changes
+            this.updateProcessCount();
+        });
         
         // Cache management event listeners
         document.getElementById('refreshCacheBtn').addEventListener('click', () => this.loadCacheStats());
         document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
         document.getElementById('preloadBtn').addEventListener('click', () => this.preloadCurrentRoute());
+    }
+    
+    initializeAltitudeUnit() {
+        // Set the dropdown to the loaded/default value
+        const altitudeUnitSelect = document.getElementById('altitudeUnit');
+        if (altitudeUnitSelect) {
+            altitudeUnitSelect.value = this.altitudeUnit;
+        }
+        
+        // Set the frame interval dropdown to the loaded/default value
+        const frameIntervalSelect = document.getElementById('frameInterval');
+        if (frameIntervalSelect) {
+            frameIntervalSelect.value = this.frameInterval.toString();
+        }
+    }
+    
+    updateProcessCount() {
+        if (this.images && this.images.length > 0) {
+            const totalToProcess = Math.ceil(this.images.length / this.frameInterval);
+            document.getElementById('processCount').textContent = totalToProcess;
+        }
     }
 
     async loadSession() {
@@ -191,6 +225,7 @@ class BikeTrailProcessor {
             await this.initializePopupMaps();
             
             document.getElementById('imageCount').textContent = data.count;
+            this.updateProcessCount();
             document.getElementById('sessionInfo').style.display = 'block';
             
             console.log(`Loaded ${data.count} images from ${sessionName}`);
@@ -244,7 +279,11 @@ class BikeTrailProcessor {
     }
 
     async processImages() {
-        for (let i = this.currentIndex; i < this.images.length; i++) {
+        // Calculate total frames to be processed with the current interval
+        const totalFramesToProcess = Math.ceil(this.images.length / this.frameInterval);
+        let processedFrames = 0;
+        
+        for (let i = this.currentIndex; i < this.images.length; i += this.frameInterval) {
             if (!this.isProcessing) break;
             
             while (this.isPaused) {
@@ -255,7 +294,8 @@ class BikeTrailProcessor {
             const image = this.images[i];
             
             await this.processImage(image, i);
-            this.updateProgress(i + 1, this.images.length);
+            processedFrames++;
+            this.updateProgress(processedFrames, totalFramesToProcess);
         }
         
         if (this.currentIndex >= this.images.length) {
@@ -280,6 +320,12 @@ class BikeTrailProcessor {
             this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
             
             this.ctx.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
+            
+            // Draw date/time in upper left corner
+            this.drawDateTime(imageData.timestamp);
+            
+            // Draw speed in bottom right corner
+            this.drawSpeed(imageData.speed);
             
             // Update detail map position (maps are now in popup)
             this.updateDetailMapPosition(imageData);
@@ -314,9 +360,9 @@ class BikeTrailProcessor {
         this.ctx.font = `${Math.floor(this.canvas.width / 80)}px Arial`; // Much larger font
         this.ctx.fillStyle = '#fff';
         
-        // Define altitude meter dimensions: half height, double width
-        const altitudeWidth = overlaySize * 2;
-        const altitudeHeight = overlaySize / 2;
+        // Define altitude meter dimensions: taller height, 3x width
+        const altitudeWidth = overlaySize * 3;
+        const altitudeHeight = overlaySize * 0.75;
         
         // Map dimensions to match captured map size (600x400 -> scale to fit overlay size)
         const mapWidth = overlaySize * 2;
@@ -328,53 +374,20 @@ class BikeTrailProcessor {
         const actualMapHeight = 600;
         
         const bottomLeft = { x: margin, y: this.canvas.height - actualMapHeight - margin };
-        const bottomRight = { x: this.canvas.width - actualMapWidth - margin, y: this.canvas.height - actualMapHeight - margin };
         const topRight = { x: this.canvas.width - altitudeWidth - margin, y: margin, width: altitudeWidth, height: altitudeHeight };
         
         // Skip black rectangle backgrounds - just draw altitude meter background
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         this.ctx.fillRect(topRight.x, topRight.y, altitudeWidth, altitudeHeight);
         this.ctx.strokeRect(topRight.x, topRight.y, altitudeWidth, altitudeHeight);
         
-        // Just draw the captured map canvases with transparency gradients
-        await this.drawRoutePreview(bottomLeft, mapWidth, mapHeight, imageData, index);
-        await this.drawDetailView(bottomRight, mapWidth, mapHeight, imageData);
+        // Only draw detail map (moved to bottom left, removed route map)
+        await this.drawDetailView(bottomLeft, mapWidth, mapHeight, imageData);
         this.drawAltitudeChart(topRight, altitudeWidth, altitudeHeight, index);
         
         // Luis bike icons are already rendered inside the captured maps
     }
 
-    async drawRoutePreview(pos, width, height, imageData, index) {
-        if (!this.routeMapCanvas) return;
-        
-        // Stretch the 450x300 crop to 900x600 on the big canvas
-        const scaledWidth = 900;
-        const scaledHeight = 600;
-        
-        // Create an off-screen canvas to apply the fade effect
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = scaledWidth;
-        tempCanvas.height = scaledHeight;
-        const tempCtx = tempCanvas.getContext('2d');
-        
-        // Apply rounded corner clipping to temp canvas first
-        const radius = 50;
-        this.createRoundedRectPathOnContext(tempCtx, 0, 0, scaledWidth, scaledHeight, radius);
-        tempCtx.clip();
-        
-        // Draw the map to the temp canvas, stretching from 450x300 to scaledWidth x scaledHeight
-        tempCtx.drawImage(
-            this.routeMapCanvas,        // source canvas (450x300)
-            0, 0, 450, 300,            // source rectangle (full 450x300)
-            0, 0, scaledWidth, scaledHeight  // destination rectangle (stretch to 900x600)
-        );
-        
-        // Apply fade effect to the temp canvas
-        this.applyFadeToCanvas(tempCtx, scaledWidth, scaledHeight);
-        
-        // Draw the faded map to the main canvas (already rounded and faded)
-        this.ctx.drawImage(tempCanvas, pos.x, pos.y);
-    }
 
     async drawDetailView(pos, width, height, imageData) {
         if (!this.detailMapCanvas) return;
@@ -559,7 +572,7 @@ class BikeTrailProcessor {
                         
                         // Draw bike icon at marker position
                         const iconSize = map === this.detailMap ? 30 : 20;
-                        ctx.drawImage(this.bikeIcon, markerX - iconSize/2, markerY - iconSize/2, iconSize, iconSize);
+                        ctx.drawImage(this.bikeIcon, markerX - iconSize/2, markerY - iconSize, iconSize, iconSize);
                     }
                 }
             }
@@ -1143,6 +1156,24 @@ class BikeTrailProcessor {
         console.log('Screen capture stopped and cleaned up');
     }
 
+    // Convert meters to feet
+    metersToFeet(meters) {
+        return Math.round(meters * 3.28084);
+    }
+    
+    // Get altitude value in the selected unit
+    getAltitudeInUnit(altitudeInMeters) {
+        if (this.altitudeUnit === 'ft') {
+            return this.metersToFeet(altitudeInMeters);
+        }
+        return Math.round(altitudeInMeters);
+    }
+    
+    // Get the unit label
+    getUnitLabel() {
+        return this.altitudeUnit === 'ft' ? ' ft' : ' m';
+    }
+    
     drawAltitudeChart(pos, width, height, currentIndex) {
         if (!this.images.length || this.altitudeRange.max === 0) return;
         
@@ -1155,7 +1186,10 @@ class BikeTrailProcessor {
         const altRange = this.altitudeRange.max - this.altitudeRange.min || 1;
         const currentAlt = this.images[currentIndex]?.alt || 0;
         
-        // Draw altitude bar graph for entire dataset
+        // Convert altitude range to selected unit for display
+        const displayedAltRange = this.getAltitudeInUnit(this.altitudeRange.max) - this.getAltitudeInUnit(this.altitudeRange.min);
+        
+        // Draw altitude bar graph for ALL frames (smooth detailed chart)
         this.ctx.fillStyle = 'rgba(52, 152, 219, 0.3)';
         const barWidth = Math.max(1, chartWidth / this.images.length);
         
@@ -1163,7 +1197,9 @@ class BikeTrailProcessor {
             const alt = this.images[i]?.alt || 0;
             if (alt === 0) continue;
             
-            const normalizedHeight = ((alt - this.altitudeRange.min) / altRange) * chartHeight;
+            // Relative altitude: 0 = min altitude, max = total elevation gain
+            const relativeAlt = alt - this.altitudeRange.min;
+            const normalizedHeight = (relativeAlt / altRange) * chartHeight;
             const barHeight = Math.max(1, normalizedHeight);
             const x = chartX + (i / this.images.length) * chartWidth;
             const y = chartY + chartHeight - barHeight;
@@ -1171,25 +1207,27 @@ class BikeTrailProcessor {
             this.ctx.fillRect(x, y, barWidth, barHeight);
         }
         
-        // Draw bike marker at current position
+        // Draw bike marker at current position (accounts for frame interval)
         if (currentAlt > 0) {
+            // Position bike marker based on actual currentIndex in the full dataset
             const markerX = chartX + (currentIndex / this.images.length) * chartWidth;
-            const markerHeight = ((currentAlt - this.altitudeRange.min) / altRange) * chartHeight;
+            const relativeCurrentAlt = currentAlt - this.altitudeRange.min;
+            const markerHeight = (relativeCurrentAlt / altRange) * chartHeight;
             const markerY = chartY + chartHeight - markerHeight;
             
-            // Draw bike icon at the top of the current bar
-            this.drawBikeIconAtPosition(markerX, markerY - 25);
+            // Draw bike icon just above the current bar (bike bottom at bar top)
+            this.drawBikeIconAtPosition(markerX, markerY);
         }
         
-        // Labels with larger font
+        // Labels with larger font - show relative altitude in selected unit
         this.ctx.fillStyle = '#fff';
-        this.ctx.font = `${Math.floor(this.canvas.width / 120)}px Arial`; // Larger font for labels
+        this.ctx.font = `${Math.floor(this.canvas.width / 80)}px Arial`; // Larger font for labels
         
-        // Max altitude (top)
-        this.ctx.fillText(`${this.altitudeRange.max.toFixed(0)}m`, pos.x + 10, pos.y + 25);
+        // Total elevation gain (top)
+        this.ctx.fillText(`${displayedAltRange}${this.getUnitLabel()}`, pos.x + 15, pos.y + 40);
         
-        // Min altitude (bottom)  
-        this.ctx.fillText(`${this.altitudeRange.min.toFixed(0)}m`, pos.x + 10, pos.y + height - 5);
+        // Base level (bottom)  
+        this.ctx.fillText(`0`, pos.x + 15, pos.y + height - 20);
     }
 
     drawBikeIcon(x, y) {
@@ -1217,11 +1255,11 @@ class BikeTrailProcessor {
         this.ctx.shadowOffsetX = 0;
         this.ctx.shadowOffsetY = 0;
         
-        // Draw the bike icon centered at position
+        // Draw the bike icon with bottom center at position
         this.ctx.drawImage(
             this.bikeIcon, 
             x - iconSize/2, 
-            y - iconSize/2, 
+            y - iconSize, 
             iconSize, 
             iconSize
         );
@@ -1229,6 +1267,81 @@ class BikeTrailProcessor {
         // Reset shadow
         this.ctx.shadowColor = 'transparent';
         this.ctx.shadowBlur = 0;
+    }
+
+    drawDateTime(timestamp) {
+        if (!timestamp) return;
+        
+        // Create date object from timestamp
+        const date = new Date(timestamp);
+        
+        // Format: dd-MMM-yyyy hh:mm am/pm TZ
+        const day = date.getDate().toString().padStart(2, '0');
+        const month = date.toLocaleDateString('en-US', { month: 'short' });
+        const year = date.getFullYear();
+        
+        let hours = date.getHours();
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+        const ampm = hours >= 12 ? 'pm' : 'am';
+        
+        // Convert to 12-hour format
+        if (hours === 0) hours = 12;
+        else if (hours > 12) hours = hours - 12;
+        
+        const dateTimeString = `${day}-${month}-${year} ${hours}:${minutes} ${ampm}`;
+        
+        // Set up text styling
+        const fontSize = Math.floor(this.canvas.width / 40); // Double the font size
+        this.ctx.font = `${fontSize}px Arial`;
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.strokeStyle = '#000000';
+        this.ctx.lineWidth = 2;
+        
+        // Position in upper left corner with padding
+        const x = 20;
+        const y = fontSize + 20;
+        
+        // Draw text with black outline for visibility
+        this.ctx.strokeText(dateTimeString, x, y);
+        this.ctx.fillText(dateTimeString, x, y);
+    }
+
+    drawSpeed(speedMPS) {
+        if (!speedMPS && speedMPS !== 0) return;
+        
+        // Convert speed based on altitude unit preference
+        let speed, units;
+        if (this.altitudeUnit === 'ft') {
+            // Convert m/s to mph: multiply by 2.237
+            speed = speedMPS * 2.237;
+            units = 'mph';
+        } else {
+            // Convert m/s to km/h: multiply by 3.6
+            speed = speedMPS * 3.6;
+            units = 'km/h';
+        }
+        
+        // Format speed to 1 decimal place
+        const speedString = `bike ${speed.toFixed(1)} ${units}`;
+        
+        // Set up text styling (same size as date/time)
+        const fontSize = Math.floor(this.canvas.width / 40);
+        this.ctx.font = `${fontSize}px Arial`;
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.strokeStyle = '#000000';
+        this.ctx.lineWidth = 2;
+        
+        // Measure text width for right alignment
+        const textMetrics = this.ctx.measureText(speedString);
+        const textWidth = textMetrics.width;
+        
+        // Position in bottom right corner with padding
+        const x = this.canvas.width - textWidth - 20;
+        const y = this.canvas.height - 20;
+        
+        // Draw text with black outline for visibility
+        this.ctx.strokeText(speedString, x, y);
+        this.ctx.fillText(speedString, x, y);
     }
 
     async uploadImage(blob, timestamp) {
