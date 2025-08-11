@@ -296,7 +296,7 @@
                     const bikeIcon = L.icon({
                         iconUrl: isGoingWest ? '/images/luis_bike_100_west.png' : '/images/luis_bike_100_east.png',
                         iconSize: [50, 50],
-                        iconAnchor: [25, 25]
+                        iconAnchor: [25, 50]
                     });
                     
                     window.detailMarker = L.marker([lat, lon], { icon: bikeIcon }).addTo(window.detailMap);
@@ -318,7 +318,7 @@
                     const routeBikeIcon = L.icon({
                         iconUrl: isGoingWest ? '/images/luis_bike_100_west.png' : '/images/luis_bike_100_east.png',
                         iconSize: [35, 35],
-                        iconAnchor: [17, 17]
+                        iconAnchor: [17, 35]
                     });
                     
                     window.routeMarker = L.marker([lat, lon], { icon: routeBikeIcon }).addTo(window.routeMap);
