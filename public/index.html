@@ -86,9 +86,46 @@
                         <button id="refreshCacheBtn">Refresh Stats</button>
                         <button id="clearCacheBtn" class="danger">Clear All Cache</button>
                         <button id="preloadBtn">Preload Current Routes</button>
+                        <button id="debugMapBtn">Toggle Map Debug</button>
+                    </div>
+                    
+                    <div class="crop-selector" style="margin-top: 20px;">
+                        <h4>🎯 Visual Crop Area Selector</h4>
+                        <div style="display: flex; gap: 20px; margin: 10px 0;">
+                            <div class="slider-group">
+                                <label for="cropX">X Position:</label>
+                                <input type="range" id="cropX" min="0" max="2000" value="200" />
+                                <span id="cropXValue">200</span>
+                            </div>
+                            <div class="slider-group">
+                                <label for="cropY">Y Position:</label>
+                                <input type="range" id="cropY" min="0" max="2000" value="100" />
+                                <span id="cropYValue">100</span>
+                            </div>
+                            <div class="slider-group">
+                                <label for="cropWidth">Width:</label>
+                                <input type="range" id="cropWidth" min="100" max="2000" value="600" />
+                                <span id="cropWidthValue">600</span>
+                            </div>
+                            <div class="slider-group">
+                                <label for="cropHeight">Height:</label>
+                                <input type="range" id="cropHeight" min="100" max="2000" value="400" />
+                                <span id="cropHeightValue">400</span>
+                            </div>
+                        </div>
+                        <div style="margin: 10px 0;">
+                            <button id="capturePreviewBtn">Capture Preview</button>
+                            <span style="color: #666; font-style: italic;">Crop values apply automatically as you adjust sliders</span>
+                        </div>
+                        <canvas id="cropPreviewCanvas" width="400" height="300" style="border: 1px solid #ccc; display: none; margin-top: 10px;"></canvas>
                     </div>
                 </div>
             </details>
+        </div>
+
+        <!-- Debug output panel -->
+        <div id="debugPanel" style="display: none; background: #f0f0f0; padding: 15px; margin: 10px 0; border: 1px solid #ccc; font-family: monospace; white-space: pre-wrap; max-height: 300px; overflow-y: auto;">
+            Debug output will appear here...
         </div>
 
         <div class="canvas-container">
