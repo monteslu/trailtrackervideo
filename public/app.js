@@ -20,6 +20,25 @@ class BikeTrailProcessor {
         // Worker readiness state
         this.workerDetectionReady = false;
         
+        // Time tracking for estimation
+        this.processingStartTime = null;
+        this.frameTimes = [];
+        
+        // Debug mode for map capture
+        this.debugMapCapture = false;
+        this.debugPanel = document.getElementById('debugPanel');
+        this.debugOutput = [];
+        this.debugLogged = false;
+        
+        // Crop area selector
+        this.cropAreaOverride = null;
+        this.cropPreviewCanvas = document.getElementById('cropPreviewCanvas');
+        this.cropPreviewCtx = this.cropPreviewCanvas.getContext('2d');
+        
+        // Popup capture canvas
+        this.popupCanvas = null;
+        
+        
         // Initialize web worker
         this.initializeWorker();
         
@@ -242,6 +261,30 @@ class BikeTrailProcessor {
         document.getElementById('refreshCacheBtn').addEventListener('click', () => this.loadCacheStats());
         document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
         document.getElementById('preloadBtn').addEventListener('click', () => this.preloadCurrentRoute());
+        
+        // Debug mode toggle
+        document.getElementById('debugMapBtn').addEventListener('click', () => {
+            this.debugMapCapture = !this.debugMapCapture;
+            const btn = document.getElementById('debugMapBtn');
+            btn.textContent = this.debugMapCapture ? 'Disable Map Debug' : 'Enable Map Debug';
+            btn.style.backgroundColor = this.debugMapCapture ? '#ff6b6b' : '';
+            
+            // Show/hide debug panel
+            this.debugPanel.style.display = this.debugMapCapture ? 'block' : 'none';
+            if (!this.debugMapCapture) {
+                this.debugOutput = [];
+                this.debugPanel.textContent = 'Debug output will appear here...';
+            } else {
+                // Reset debug logging when enabling
+                this.debugLogged = false;
+                this.debugOutput = [];
+            }
+            
+            console.log('Map capture debug mode:', this.debugMapCapture ? 'ENABLED' : 'DISABLED');
+        });
+        
+        // Crop area selector event listeners
+        this.initializeCropSelector();
     }
     
     initializeAltitudeUnit() {
@@ -369,6 +412,13 @@ class BikeTrailProcessor {
         const totalFramesToProcess = Math.ceil(this.images.length / this.frameInterval);
         let processedFrames = 0;
         
+        // Reset time tracking at start
+        this.processingStartTime = Date.now();
+        this.frameTimes = [];
+        
+        // Reset debug logging for new session
+        this.debugLogged = false;
+        
         for (let i = this.currentIndex; i < this.images.length; i += this.frameInterval) {
             if (!this.isProcessing) break;
             
@@ -379,13 +429,45 @@ class BikeTrailProcessor {
             this.currentIndex = i;
             const image = this.images[i];
             
+            const frameStartTime = Date.now();
             await this.processImage(image, i);
+            const frameEndTime = Date.now();
+            
             processedFrames++;
-            this.updateProgress(processedFrames, totalFramesToProcess);
+            
+            // Track frame processing time
+            this.frameTimes.push(frameEndTime - frameStartTime);
+            
+            // Calculate and show time estimate after 2 frames
+            let timeEstimate = null;
+            if (this.frameTimes.length >= 2) {
+                const avgFrameTime = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
+                const remainingFrames = totalFramesToProcess - processedFrames;
+                const estimatedMs = remainingFrames * avgFrameTime;
+                timeEstimate = this.formatTimeEstimate(estimatedMs);
+            }
+            
+            this.updateProgress(processedFrames, totalFramesToProcess, timeEstimate);
         }
         
         if (this.currentIndex >= this.images.length) {
             this.finishProcessing();
+        }
+    }
+    
+    formatTimeEstimate(milliseconds) {
+        const seconds = Math.floor(milliseconds / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+        
+        if (hours > 0) {
+            const remainingMinutes = minutes % 60;
+            return `${hours}h ${remainingMinutes}m`;
+        } else if (minutes > 0) {
+            const remainingSeconds = seconds % 60;
+            return `${minutes}m ${remainingSeconds}s`;
+        } else {
+            return `${seconds}s`;
         }
     }
 
@@ -486,33 +568,17 @@ class BikeTrailProcessor {
     async drawDetailView(pos, width, height, imageData) {
         if (!this.detailMapCanvas) return;
         
-        // Stretch the 450x300 crop to 900x600 on the big canvas
-        const scaledWidth = 900;
-        const scaledHeight = 600;
+        // Update detailMapCanvas dimensions from crop selector values
+        const cropWidth = parseInt(localStorage.getItem('cropWidth') || '600');
+        const cropHeight = parseInt(localStorage.getItem('cropHeight') || '400');
         
-        // Create an off-screen canvas to apply the fade effect
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = scaledWidth;
-        tempCanvas.height = scaledHeight;
-        const tempCtx = tempCanvas.getContext('2d');
+        if (this.detailMapCanvas.width !== cropWidth || this.detailMapCanvas.height !== cropHeight) {
+            this.detailMapCanvas.width = cropWidth;
+            this.detailMapCanvas.height = cropHeight;
+        }
         
-        // Apply rounded corner clipping to temp canvas first
-        const radius = 50;
-        this.createRoundedRectPathOnContext(tempCtx, 0, 0, scaledWidth, scaledHeight, radius);
-        tempCtx.clip();
-        
-        // Draw the map to the temp canvas, stretching from 450x300 to scaledWidth x scaledHeight
-        tempCtx.drawImage(
-            this.detailMapCanvas,       // source canvas (450x300)
-            0, 0, 450, 300,            // source rectangle (full 450x300)
-            0, 0, scaledWidth, scaledHeight  // destination rectangle (stretch to 900x600)
-        );
-        
-        // Apply fade effect to the temp canvas
-        this.applyFadeToCanvas(tempCtx, scaledWidth, scaledHeight);
-        
-        // Draw the faded map to the main canvas (already rounded and faded)
-        this.ctx.drawImage(tempCanvas, pos.x, pos.y);
+        // Draw the detail map canvas directly to main canvas
+        this.ctx.drawImage(this.detailMapCanvas, pos.x, pos.y);
     }
     
     createRoundedRectPath(x, y, width, height, radius) {
@@ -927,26 +993,79 @@ class BikeTrailProcessor {
         
     }
 
+    async capturePopupToCanvas() {
+        if (!this.captureVideo || !this.mapPopup) return null;
+        
+        try {
+            // Create popupCanvas if it doesn't exist or size changed
+            const videoWidth = this.captureVideo.videoWidth;
+            const videoHeight = this.captureVideo.videoHeight;
+            
+            if (!this.popupCanvas || 
+                this.popupCanvas.width !== videoWidth || 
+                this.popupCanvas.height !== videoHeight) {
+                
+                this.popupCanvas = document.createElement('canvas');
+                this.popupCanvas.width = videoWidth;
+                this.popupCanvas.height = videoHeight;
+            }
+            
+            const ctx = this.popupCanvas.getContext('2d');
+            
+            // Capture the entire screen to popupCanvas
+            ctx.drawImage(this.captureVideo, 0, 0, videoWidth, videoHeight);
+            
+            return this.popupCanvas;
+            
+        } catch (error) {
+            console.error('Error capturing popup to canvas:', error);
+            return null;
+        }
+    }
+
+    async cropFromPopupCanvas() {
+        if (!this.popupCanvas || !this.detailMapCanvas) return;
+        
+        try {
+            // Get crop coordinates from localStorage
+            const cropX = parseInt(localStorage.getItem('cropX') || '200');
+            const cropY = parseInt(localStorage.getItem('cropY') || '100');
+            const cropWidth = parseInt(localStorage.getItem('cropWidth') || '600');
+            const cropHeight = parseInt(localStorage.getItem('cropHeight') || '400');
+            
+            // Update detailMapCanvas size to match crop dimensions
+            this.detailMapCanvas.width = cropWidth;
+            this.detailMapCanvas.height = cropHeight;
+            
+            const detailCtx = this.detailMapCanvas.getContext('2d');
+            
+            // Clear the canvas first
+            detailCtx.clearRect(0, 0, cropWidth, cropHeight);
+            
+            // Crop from popupCanvas to detailMapCanvas
+            detailCtx.drawImage(
+                this.popupCanvas,
+                cropX, cropY, cropWidth, cropHeight,  // Source rectangle from popup
+                0, 0, cropWidth, cropHeight           // Fill entire detail canvas
+            );
+            
+            // Apply transparent gradient around edges
+            this.applyFadeToCanvas(detailCtx, cropWidth, cropHeight);
+            
+        } catch (error) {
+            console.error('Error cropping from popup canvas:', error);
+        }
+    }
+
     async captureMapToCanvas() {
         if (!this.routeMapCanvas || !this.detailMapCanvas || !this.mapPopup) return;
         
         try {
-            // Capture individual map areas using precise coordinates
-            const routeCanvas = await this.captureSpecificMapArea('routeMap');
-            const detailCanvas = await this.captureSpecificMapArea('detailMap');
+            // First capture the full popup to popupCanvas
+            await this.capturePopupToCanvas();
             
-            
-            if (routeCanvas && detailCanvas) {
-                const routeCtx = this.routeMapCanvas.getContext('2d');
-                const detailCtx = this.detailMapCanvas.getContext('2d');
-                
-                routeCtx.clearRect(0, 0, 600, 400);
-                detailCtx.clearRect(0, 0, 600, 400);
-                
-                // Draw captured maps to target canvases (1:1 scale, no stretching)
-                routeCtx.drawImage(routeCanvas, 0, 0);
-                detailCtx.drawImage(detailCanvas, 0, 0);
-            }
+            // Then crop from popupCanvas to detail map
+            await this.cropFromPopupCanvas();
             
         } catch (error) {
             console.error('Error capturing maps from popup:', error);
@@ -972,56 +1091,174 @@ class BikeTrailProcessor {
             // Get platform info for debugging
             const platform = this.getPlatformInfo();
             
-            // Get device pixel ratio (varies by platform and display)
-            const pixelRatio = this.getEffectivePixelRatio();
-            
-            // Get popup window decoration offsets (platform-specific)
-            const popupOuterWidth = this.mapPopup.outerWidth;
-            const popupInnerWidth = this.mapPopup.innerWidth;
-            const popupOuterHeight = this.mapPopup.outerHeight;
-            const popupInnerHeight = this.mapPopup.innerHeight;
-            
-            // Calculate decoration sizes
-            const decorationLeft = Math.round((popupOuterWidth - popupInnerWidth) / 2);
-            const decorationTop = popupOuterHeight - popupInnerHeight;
-            
-            // Get specific map coordinates (these are in CSS pixels)
+            // Get specific map coordinates (these are in CSS pixels relative to popup content)
             const mapCoords = this.mapCoordinates[mapType];
             if (!mapCoords) return null;
             
+            // Get actual div dimensions and account for pixel density
+            let actualDivWidth = 450;
+            let actualDivHeight = 300;
             
-            // Create smaller canvas for center crop - maintain 1.5:1 aspect ratio like original
-            const cropWidth = 450;
-            const cropHeight = 300;
-            const canvas = document.createElement('canvas');
-            canvas.width = cropWidth;
-            canvas.height = cropHeight;
-            const ctx = canvas.getContext('2d');
+            try {
+                const popupDoc = this.mapPopup.document;
+                const mapDiv = popupDoc.querySelector(`#${mapType}`);
+                if (mapDiv) {
+                    const rect = mapDiv.getBoundingClientRect();
+                    actualDivWidth = rect.width;
+                    actualDivHeight = rect.height;
+                }
+            } catch (e) {
+                // Use defaults
+            }
             
-            // Try different decoration calculations
-            const halfDecorationTop = Math.round(decorationTop / 2);
+            // Account for pixel density - multiply by device pixel ratio
+            const pixelRatio = window.devicePixelRatio || 1;
+            let cropWidth = actualDivWidth * pixelRatio;
+            let cropHeight = actualDivHeight * pixelRatio;
+            
+            // Calculate the scale between video capture and popup content
+            const videoWidth = this.captureVideo.videoWidth;
+            const videoHeight = this.captureVideo.videoHeight;
+            
+            // Your debug shows the video is 2724x1430, but popup reports negative decorations
+            // This suggests the video is capturing content area only, not full window
+            // Let's use direct scaling from video to popup content
+            
+            // Get actual popup content dimensions
+            let actualPopupWidth, actualPopupHeight;
+            try {
+                const popupDoc = this.mapPopup.document;
+                const mapContainer = popupDoc.querySelector('.map-previews');
+                if (mapContainer) {
+                    const containerRect = mapContainer.getBoundingClientRect();
+                    // Use the container's parent dimensions as reference
+                    actualPopupWidth = containerRect.width || this.mapPopup.innerWidth;
+                    actualPopupHeight = containerRect.height || this.mapPopup.innerHeight;
+                } else {
+                    actualPopupWidth = this.mapPopup.innerWidth;
+                    actualPopupHeight = this.mapPopup.innerHeight;
+                }
+            } catch (e) {
+                actualPopupWidth = this.mapPopup.innerWidth;
+                actualPopupHeight = this.mapPopup.innerHeight;
+            }
+            
+            // Calculate scale factors
+            const scaleX = videoWidth / actualPopupWidth;
+            const scaleY = videoHeight / actualPopupHeight;
             
             // Calculate center crop area - crop from center of the map element
             const centerOffsetX = (mapCoords.width - cropWidth) / 2;
             const centerOffsetY = (mapCoords.height - cropHeight) / 2;
             
-            const sourceX = Math.round((decorationLeft + mapCoords.left + centerOffsetX) * pixelRatio);
-            const sourceY = Math.round((halfDecorationTop + mapCoords.top + centerOffsetY) * pixelRatio);
-            const sourceWidth = Math.round(cropWidth * pixelRatio);
-            const sourceHeight = Math.round(cropHeight * pixelRatio);
+            // Get actual div coordinates from popup and account for window position
+            let divLeft = 0;
+            let divTop = 0;
             
-            // Alternative coordinates for comparison
-            const sourceXWithLeftDecoration = Math.round((decorationLeft + mapCoords.left) * pixelRatio);
-            const sourceYNoDecoration = Math.round(mapCoords.top * pixelRatio);
-            const sourceYFullDecoration = Math.round((decorationTop + mapCoords.top) * pixelRatio);
+            try {
+                const popupDoc = this.mapPopup.document;
+                const mapDiv = popupDoc.querySelector(`#${mapType}`);
+                if (mapDiv) {
+                    const rect = mapDiv.getBoundingClientRect();
+                    // These coordinates are relative to the popup viewport
+                    divLeft = rect.left;
+                    divTop = rect.top;
+                }
+            } catch (e) {
+                // Use stored coordinates as fallback
+                if (mapCoords) {
+                    divLeft = mapCoords.left;
+                    divTop = mapCoords.top;
+                }
+            }
+            
+            // Use the pixel ratio already defined above
+            
+            // Use crop area override if available, otherwise calculate from div position
+            let sourceX, sourceY, sourceWidth, sourceHeight;
+            
+            if (this.cropAreaOverride) {
+                // Use manual crop values and update canvas size
+                sourceX = this.cropAreaOverride.x;
+                sourceY = this.cropAreaOverride.y;
+                sourceWidth = this.cropAreaOverride.width;
+                sourceHeight = this.cropAreaOverride.height;
+                
+                // Update crop size to match crop area
+                cropWidth = sourceWidth;
+                cropHeight = sourceHeight;
+            } else {
+                // Calculate from div position * pixel ratio
+                sourceX = Math.round(divLeft * pixelRatio);
+                sourceY = Math.round(divTop * pixelRatio);
+                sourceWidth = cropWidth;  // Already adjusted for pixel ratio
+                sourceHeight = cropHeight; // Already adjusted for pixel ratio
+            }
+            
+            // Create canvas with final dimensions
+            const canvas = document.createElement('canvas');
+            canvas.width = cropWidth;
+            canvas.height = cropHeight;
+            const ctx = canvas.getContext('2d');
+            
+            // Linux adjustment: if the vertical offset is still wrong, try adding a title bar offset
+            // This is a heuristic based on your debug showing consistent -320 vertical offset
+            if (platform.name === 'Linux') {
+                // Try to detect if we need a title bar offset
+                // If the crop would be in the top portion of the video, add an offset
+                const videoTopThird = videoHeight / 3;
+                if (sourceY < videoTopThird) {
+                    // Estimate title bar height and add it
+                    const estimatedTitleBarHeight = Math.round(40 * scaleY); // ~40px title bar
+                    sourceY += estimatedTitleBarHeight;
+                }
+            }
+            
+            // Check if coordinates seem unreasonable and try to center them
+            const cropCenterX = sourceX + sourceWidth / 2;
+            const cropCenterY = sourceY + sourceHeight / 2;
+            const videoCenterX = videoWidth / 2;
+            const videoCenterY = videoHeight / 2;
+            
+            // Apply small adjustments instead of full centering
+            let adjustedSourceX = sourceX;
+            let adjustedSourceY = sourceY;
+            
+            // Small horizontal adjustment - just nudge towards center
+            const horizontalOffset = cropCenterX - videoCenterX;
+            if (Math.abs(horizontalOffset) > 200) {
+                const adjustmentAmount = Math.round(horizontalOffset * 0.3); // Move 30% towards center
+                adjustedSourceX = sourceX - adjustmentAmount;
+            }
+            
+            // Small vertical adjustment
+            const verticalOffset = cropCenterY - videoCenterY;
+            if (Math.abs(verticalOffset) > 50) {
+                const adjustmentAmount = Math.round(verticalOffset * 0.5); // Move 50% towards center
+                adjustedSourceY = sourceY - adjustmentAmount;
+            }
+            
+            // Use adjusted coordinates if they changed
+            if (adjustedSourceX !== sourceX || adjustedSourceY !== sourceY) {
+                return this.captureWithCoords(mapType, adjustedSourceX, adjustedSourceY, sourceWidth, sourceHeight, cropWidth, cropHeight);
+            }
+            
+            // Ensure coordinates are within video bounds
+            const clampedSourceX = Math.max(0, Math.min(sourceX, videoWidth - sourceWidth));
+            const clampedSourceY = Math.max(0, Math.min(sourceY, videoHeight - sourceHeight));
             
             
-            // Capture center crop area from screen capture using device pixels
+            // Capture crop area from screen capture and fill entire canvas
             ctx.drawImage(
                 this.captureVideo,
-                sourceX, sourceY, sourceWidth, sourceHeight,  // Source rectangle (center crop)
-                0, 0, cropWidth, cropHeight                    // Destination rectangle
+                clampedSourceX, clampedSourceY, sourceWidth, sourceHeight,  // Source rectangle from video
+                0, 0, canvas.width, canvas.height                          // Fill entire canvas
             );
+            
+            // Add debug info to text panel (easy to copy/paste) - only once per session
+            if (this.debugMapCapture && !this.debugLogged) {
+                this.logDebugInfo(mapType, clampedSourceX, clampedSourceY, sourceWidth, sourceHeight);
+            }
             
             return canvas;
         } catch (error) {
@@ -1064,6 +1301,208 @@ class BikeTrailProcessor {
         }
         
         return devicePixelRatio;
+    }
+    
+    initializeCropSelector() {
+        const sliders = ['cropX', 'cropY', 'cropWidth', 'cropHeight'];
+        const defaults = { cropX: 200, cropY: 100, cropWidth: 600, cropHeight: 400 };
+        
+        // Load values from localStorage and update sliders
+        sliders.forEach(id => {
+            const slider = document.getElementById(id);
+            const valueSpan = document.getElementById(id + 'Value');
+            
+            // Load from localStorage or use default
+            const savedValue = localStorage.getItem(id) || defaults[id];
+            slider.value = savedValue;
+            valueSpan.textContent = savedValue;
+            
+            slider.addEventListener('input', () => {
+                valueSpan.textContent = slider.value;
+                // Save to localStorage on change
+                localStorage.setItem(id, slider.value);
+                this.updateCropPreview();
+            });
+        });
+        
+        // Capture preview button
+        document.getElementById('capturePreviewBtn').addEventListener('click', () => {
+            this.capturePopupPreview();
+        });
+        
+        // Auto-enable crop area override on slider change
+        sliders.forEach(id => {
+            const slider = document.getElementById(id);
+            slider.addEventListener('input', () => {
+                this.updateCropAreaOverride();
+            });
+        });
+        
+        // Initialize crop area override
+        this.updateCropAreaOverride();
+        
+        // Crop values now apply automatically - no button needed
+    }
+    
+    updateCropAreaOverride() {
+        const x = parseInt(document.getElementById('cropX').value);
+        const y = parseInt(document.getElementById('cropY').value);
+        const w = parseInt(document.getElementById('cropWidth').value);
+        const h = parseInt(document.getElementById('cropHeight').value);
+        
+        this.cropAreaOverride = { x, y, width: w, height: h };
+    }
+    
+    async capturePopupPreview() {
+        if (!this.captureVideo || !this.mapPopup) {
+            alert('Need active screen capture and popup window');
+            return;
+        }
+        
+        try {
+            const videoWidth = this.captureVideo.videoWidth;
+            const videoHeight = this.captureVideo.videoHeight;
+            
+            // Scale down for preview (fit to 400x300 canvas)
+            const scale = Math.min(400 / videoWidth, 300 / videoHeight);
+            const previewWidth = videoWidth * scale;
+            const previewHeight = videoHeight * scale;
+            
+            this.cropPreviewCanvas.width = previewWidth;
+            this.cropPreviewCanvas.height = previewHeight;
+            this.cropPreviewCanvas.style.display = 'block';
+            
+            // Draw full video capture scaled down
+            this.cropPreviewCtx.drawImage(
+                this.captureVideo,
+                0, 0, videoWidth, videoHeight,
+                0, 0, previewWidth, previewHeight
+            );
+            
+            this.updateCropPreview();
+            
+        } catch (error) {
+            console.error('Preview capture failed:', error);
+        }
+    }
+    
+    updateCropPreview() {
+        if (!this.cropPreviewCanvas.style.display || this.cropPreviewCanvas.style.display === 'none') return;
+        
+        const x = parseInt(document.getElementById('cropX').value);
+        const y = parseInt(document.getElementById('cropY').value);
+        const w = parseInt(document.getElementById('cropWidth').value);
+        const h = parseInt(document.getElementById('cropHeight').value);
+        
+        // Use popupCanvas if available, otherwise fall back to captureVideo
+        const sourceCanvas = this.popupCanvas || this.captureVideo;
+        if (!sourceCanvas) return;
+        
+        const sourceWidth = sourceCanvas.width || sourceCanvas.videoWidth;
+        const sourceHeight = sourceCanvas.height || sourceCanvas.videoHeight;
+        
+        // Calculate scale factor for preview
+        const scale = this.cropPreviewCanvas.width / sourceWidth;
+        
+        // Clear previous rectangle
+        this.cropPreviewCtx.save();
+        this.cropPreviewCtx.globalCompositeOperation = 'source-over';
+        
+        // Redraw the popup/video 
+        this.cropPreviewCtx.drawImage(
+            sourceCanvas,
+            0, 0, sourceWidth, sourceHeight,
+            0, 0, this.cropPreviewCanvas.width, this.cropPreviewCanvas.height
+        );
+        
+        // Draw red crop rectangle
+        this.cropPreviewCtx.strokeStyle = 'red';
+        this.cropPreviewCtx.lineWidth = 2;
+        this.cropPreviewCtx.strokeRect(x * scale, y * scale, w * scale, h * scale);
+        
+        this.cropPreviewCtx.restore();
+    }
+    
+    captureWithCoords(mapType, sourceX, sourceY, sourceWidth, sourceHeight, cropWidth, cropHeight) {
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = cropWidth;
+            canvas.height = cropHeight;
+            const ctx = canvas.getContext('2d');
+            
+            ctx.drawImage(
+                this.captureVideo,
+                sourceX, sourceY, sourceWidth, sourceHeight,
+                0, 0, cropWidth, cropHeight
+            );
+            
+            return canvas;
+        } catch (error) {
+            console.warn(`Failed to capture ${mapType} with coords:`, error);
+            return null;
+        }
+    }
+    
+    logDebugInfo(mapType, sourceX, sourceY, sourceWidth, sourceHeight) {
+        if (!this.captureVideo) return;
+        
+        const videoWidth = this.captureVideo.videoWidth;
+        const videoHeight = this.captureVideo.videoHeight;
+        
+        // Get window info
+        const popupInnerWidth = this.mapPopup ? this.mapPopup.innerWidth : 'N/A';
+        const popupInnerHeight = this.mapPopup ? this.mapPopup.innerHeight : 'N/A';
+        const popupOuterWidth = this.mapPopup ? this.mapPopup.outerWidth : 'N/A';
+        const popupOuterHeight = this.mapPopup ? this.mapPopup.outerHeight : 'N/A';
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        
+        // Calculate scales
+        const scaleToInner = popupInnerWidth !== 'N/A' ? (videoWidth / popupInnerWidth).toFixed(3) : 'N/A';
+        const scaleToOuter = popupOuterWidth !== 'N/A' ? (videoWidth / popupOuterWidth).toFixed(3) : 'N/A';
+        
+        const debugInfo = `
+=== MAP CAPTURE DEBUG: ${mapType.toUpperCase()} ===
+Timestamp: ${new Date().toLocaleTimeString()}
+
+SYSTEM INFO:
+- OS: ${navigator.platform}
+- User Agent: ${navigator.userAgent.split(' ').slice(-2).join(' ')}
+- Device Pixel Ratio: ${devicePixelRatio}
+
+VIDEO CAPTURE:
+- Video Dimensions: ${videoWidth} x ${videoHeight}
+
+POPUP WINDOW:
+- Inner Dimensions: ${popupInnerWidth} x ${popupInnerHeight}
+- Outer Dimensions: ${popupOuterWidth} x ${popupOuterHeight}
+- Decorations: ${popupOuterWidth - popupInnerWidth} x ${popupOuterHeight - popupInnerHeight}
+
+SCALING:
+- Video/Inner Scale: ${scaleToInner}x
+- Video/Outer Scale: ${scaleToOuter}x
+
+CROP COORDINATES:
+- Source X: ${sourceX}
+- Source Y: ${sourceY}
+- Source Width: ${sourceWidth}
+- Source Height: ${sourceHeight}
+- Crop Center: ${sourceX + sourceWidth/2}, ${sourceY + sourceHeight/2}
+- Video Center: ${videoWidth/2}, ${videoHeight/2}
+- Horizontal Offset: ${(sourceX + sourceWidth/2) - (videoWidth/2)}
+- Vertical Offset: ${(sourceY + sourceHeight/2) - (videoHeight/2)}
+
+===============================================
+`;
+
+        this.debugOutput.push(debugInfo);
+        
+        // Update debug panel
+        this.debugPanel.textContent = this.debugOutput.join('\n');
+        
+        // Mark as logged so we don't spam
+        if (this.debugOutput.length >= 2) { // Both routeMap and detailMap
+            this.debugLogged = true;
+        }
     }
 
     // Maps are now in iframe, so updates happen automatically via existing methods
@@ -1119,25 +1558,26 @@ class BikeTrailProcessor {
         }
 
         try {
-            // Get popup window position and size
-            const popupX = this.mapPopup.screenX || this.mapPopup.screenLeft || 0;
-            const popupY = this.mapPopup.screenY || this.mapPopup.screenTop || 0;
+            // Get the actual video dimensions from the capture stream
+            const videoWidth = this.captureVideo.videoWidth;
+            const videoHeight = this.captureVideo.videoHeight;
             
-            // Get the content area dimensions (excluding OS decorations)
+            // Get device pixel ratio for both windows
+            const mainPixelRatio = window.devicePixelRatio || 1;
+            const popupPixelRatio = this.mapPopup.devicePixelRatio || 1;
+            
+            // Get the popup window's dimensions
             const popupInnerWidth = this.mapPopup.innerWidth;
             const popupInnerHeight = this.mapPopup.innerHeight;
             const popupOuterWidth = this.mapPopup.outerWidth;
             const popupOuterHeight = this.mapPopup.outerHeight;
             
-            // Calculate OS decoration offsets
-            const decorationLeft = 0; // Usually no left decoration
-            const decorationTop = popupOuterHeight - popupInnerHeight; // Title bar height
-            
-            console.log('Popup dimensions:', {
-                position: [popupX, popupY],
-                inner: [popupInnerWidth, popupInnerHeight],
-                outer: [popupOuterWidth, popupOuterHeight],
-                decorations: [decorationLeft, decorationTop]
+            console.log('Screen capture dimensions:', {
+                video: [videoWidth, videoHeight],
+                popupInner: [popupInnerWidth, popupInnerHeight],
+                popupOuter: [popupOuterWidth, popupOuterHeight],
+                decorations: [popupOuterWidth - popupInnerWidth, popupOuterHeight - popupInnerHeight],
+                devicePixelRatios: { main: mainPixelRatio, popup: popupPixelRatio }
             });
             
             // Get the map container bounds within the popup
@@ -1146,7 +1586,7 @@ class BikeTrailProcessor {
                 const mapContainer = this.mapPopup.document.querySelector('.map-previews');
                 if (mapContainer) {
                     mapContainerBounds = mapContainer.getBoundingClientRect();
-                    console.log('Map container bounds:', mapContainerBounds);
+                    console.log('Map container bounds relative to viewport:', mapContainerBounds);
                 }
             } catch (e) {
                 console.warn('Could not get map container bounds:', e);
@@ -1157,21 +1597,95 @@ class BikeTrailProcessor {
             canvas.height = 500;
             const ctx = canvas.getContext('2d');
             
-            // Calculate the source rectangle to crop from the screen capture
-            let sourceX = decorationLeft;
-            let sourceY = decorationTop;
-            let sourceWidth = popupInnerWidth;
-            let sourceHeight = popupInnerHeight;
+            // Calculate the actual scale between video and window
+            // Don't assume pixel ratio - calculate it directly
+            const actualScaleX = videoWidth / popupOuterWidth;
+            const actualScaleY = videoHeight / popupOuterHeight;
             
-            // If we have map container bounds, crop to just the maps area
+            console.log('Scale calculation:', {
+                videoSize: [videoWidth, videoHeight],
+                windowOuter: [popupOuterWidth, popupOuterHeight],
+                windowInner: [popupInnerWidth, popupInnerHeight],
+                actualScale: [actualScaleX, actualScaleY],
+                devicePixelRatios: { main: mainPixelRatio, popup: popupPixelRatio }
+            });
+            
+            // Calculate window decoration sizes
+            const decorationHeight = popupOuterHeight - popupInnerHeight;
+            const decorationWidth = popupOuterWidth - popupInnerWidth;
+            
+            // Default crop area - will be refined based on what we detect
+            let sourceX = 0;
+            let sourceY = 0;
+            let sourceWidth = videoWidth;
+            let sourceHeight = videoHeight;
+            
             if (mapContainerBounds) {
-                sourceX += mapContainerBounds.left;
-                sourceY += mapContainerBounds.top;
-                sourceWidth = mapContainerBounds.width;
-                sourceHeight = mapContainerBounds.height;
+                console.log('Container bounds in popup:', {
+                    left: mapContainerBounds.left,
+                    top: mapContainerBounds.top,  
+                    width: mapContainerBounds.width,
+                    height: mapContainerBounds.height,
+                    windowInner: [popupInnerWidth, popupInnerHeight]
+                });
+                
+                // The most reliable approach: use the ratio of video to window inner dimensions
+                // This works regardless of DPI scaling
+                const scaleX = videoWidth / popupInnerWidth;
+                const scaleY = videoHeight / popupInnerHeight;
+                
+                // Try direct mapping first (assumes video captures content area)
+                sourceX = mapContainerBounds.left * scaleX;
+                sourceY = mapContainerBounds.top * scaleY;
+                sourceWidth = mapContainerBounds.width * scaleX;
+                sourceHeight = mapContainerBounds.height * scaleY;
+                
+                // Check if we're capturing the whole window (with decorations) by comparing aspect ratios
+                const videoAspect = videoWidth / videoHeight;
+                const innerAspect = popupInnerWidth / popupInnerHeight;
+                const outerAspect = popupOuterWidth / popupOuterHeight;
+                
+                const matchesInner = Math.abs(videoAspect - innerAspect) < 0.05;
+                const matchesOuter = Math.abs(videoAspect - outerAspect) < 0.05;
+                
+                // If aspect ratio matches outer better than inner, we have decorations
+                if (!matchesInner && matchesOuter) {
+                    // Recalculate with outer dimensions and decoration offset
+                    const outerScaleX = videoWidth / popupOuterWidth;
+                    const outerScaleY = videoHeight / popupOuterHeight;
+                    
+                    sourceX = mapContainerBounds.left * outerScaleX;
+                    sourceY = (mapContainerBounds.top + decorationHeight) * outerScaleY;
+                    sourceWidth = mapContainerBounds.width * outerScaleX;
+                    sourceHeight = mapContainerBounds.height * outerScaleY;
+                    
+                    console.log('Using outer window scaling (includes decorations)');
+                } else {
+                    console.log('Using inner window scaling (content only)');
+                }
+                
+                console.log('Scaling calculation:', {
+                    scale: [scaleX, scaleY],
+                    videoAspect,
+                    innerAspect,
+                    outerAspect,
+                    matchesInner,
+                    matchesOuter,
+                    source: { x: sourceX, y: sourceY, w: sourceWidth, h: sourceHeight }
+                });
+                
+                // Ensure we stay within video bounds
+                sourceX = Math.max(0, Math.min(sourceX, videoWidth - 1));
+                sourceY = Math.max(0, Math.min(sourceY, videoHeight - 1));
+                sourceWidth = Math.min(sourceWidth, videoWidth - sourceX);
+                sourceHeight = Math.min(sourceHeight, videoHeight - sourceY);
             }
             
-            console.log('Cropping source:', { sourceX, sourceY, sourceWidth, sourceHeight });
+            console.log('Final crop area:', { 
+                sourceX, sourceY, sourceWidth, sourceHeight,
+                actualScale: [actualScaleX, actualScaleY],
+                decorations: [decorationWidth, decorationHeight]
+            });
             
             // Capture and crop the video frame
             ctx.drawImage(
@@ -1179,6 +1693,40 @@ class BikeTrailProcessor {
                 sourceX, sourceY, sourceWidth, sourceHeight,  // Source rectangle (what to crop)
                 0, 0, canvas.width, canvas.height              // Destination rectangle (scale to fit)
             );
+            
+            // Add debug overlay if debug mode is enabled
+            if (this.debugMapCapture) {
+                // Draw the full video scaled down in corner for reference
+                const debugScale = 0.2;
+                const debugWidth = videoWidth * debugScale;
+                const debugHeight = videoHeight * debugScale;
+                
+                ctx.globalAlpha = 0.8;
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, debugWidth + 10, debugHeight + 10);
+                
+                // Draw full video
+                ctx.drawImage(this.captureVideo, 0, 0, debugWidth, debugHeight);
+                
+                // Draw red rectangle showing what we cropped
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(
+                    sourceX * debugScale,
+                    sourceY * debugScale,
+                    sourceWidth * debugScale,
+                    sourceHeight * debugScale
+                );
+                
+                ctx.globalAlpha = 1;
+                
+                // Add text info
+                ctx.fillStyle = 'black';
+                ctx.font = '10px monospace';
+                ctx.fillText(`Video: ${videoWidth}x${videoHeight}`, 5, debugHeight + 20);
+                ctx.fillText(`Crop: ${Math.round(sourceX)},${Math.round(sourceY)} ${Math.round(sourceWidth)}x${Math.round(sourceHeight)}`, 5, debugHeight + 32);
+                ctx.fillText(`Scale: ${actualScaleX.toFixed(2)}x${actualScaleY.toFixed(2)}`, 5, debugHeight + 44);
+            }
             
             return canvas;
         } catch (error) {
@@ -1736,10 +2284,15 @@ class BikeTrailProcessor {
         }
     }
 
-    updateProgress(current, total) {
+    updateProgress(current, total, timeEstimate = null) {
         const percentage = (current / total) * 100;
         document.getElementById('progressFill').style.width = `${percentage}%`;
-        document.getElementById('progressText').textContent = `${current} / ${total}`;
+        
+        let progressText = `${current} / ${total}`;
+        if (timeEstimate) {
+            progressText += ` - Est. time remaining: ${timeEstimate}`;
+        }
+        document.getElementById('progressText').textContent = progressText;
     }
 
     finishProcessing() {
