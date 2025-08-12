@@ -32,6 +32,8 @@ let faceDetector = null;
 let poseDetector = null;
 let objectDetector = null;
 let visionInitialized = false;
+let processingDelegate = 'CPU'; // Default to CPU
+let previousPositive = false; // Track if previous frame had person detection
 
 async function initializeMediaPipeVision() {
     if (visionInitialized) return;
@@ -62,7 +64,7 @@ async function initializeMediaPipeVision() {
         faceDetector = await FaceDetector.createFromOptions(vision, {
             baseOptions: {
                 modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
-                delegate: 'CPU'
+                delegate: processingDelegate
             },
             runningMode: 'IMAGE',
             minDetectionConfidence: 0.5
@@ -72,7 +74,7 @@ async function initializeMediaPipeVision() {
         objectDetector = await ObjectDetector.createFromOptions(vision, {
             baseOptions: {
                 modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
-                delegate: 'CPU'
+                delegate: processingDelegate
             },
             runningMode: 'IMAGE',
             scoreThreshold: 0.2,        // Lower threshold to catch more detections
@@ -225,15 +227,16 @@ async function detectPeople(imageData, scale, timestamp = null) {
         
         const results = { people: [], faces: [] };
         
-        // Face detection pass
+        // Face detection pass - DISABLED (too many false positives in bike videos)
+        /*
         if (faceDetector) {
             const faceResults = faceDetector.detect(canvas);
             
             if (faceResults.detections && faceResults.detections.length > 0) {
-                // Filter faces above 60% confidence
+                // Filter faces above 50% confidence
                 const highConfidenceFaces = faceResults.detections.filter(detection => {
                     const confidence = detection.categories[0]?.score || 0.5;
-                    if (confidence >= 0.6) {
+                    if (confidence >= 0.5) {
                         const timestampStr = timestamp ? ` at ${timestamp}` : '';
                         console.log(`🏷️ Detected: face (${(confidence * 100).toFixed(1)}% confidence)${timestampStr}`);
                         return true;
@@ -262,29 +265,48 @@ async function detectPeople(imageData, scale, timestamp = null) {
                 });
             }
         }
+        */
+        
+        // Return empty faces array for now
+        results.faces = [];
         
         // Object detection pass (filter for people only)
         if (objectDetector) {
             const objectResults = objectDetector.detect(canvas);
             
             if (objectResults.detections && objectResults.detections.length > 0) {
-                // Adaptive confidence filtering: if we have one person ≥40%, allow others down to 25%
+                // Adaptive confidence filtering with temporal continuity
                 const allPeople = objectResults.detections.filter(detection => 
                     detection.categories[0].categoryName === 'person'
                 );
                 
-                // Check if we have at least one high-confidence person
+                // Check if we have at least one high-confidence person in current frame
                 const hasHighConfidencePerson = allPeople.some(detection => 
-                    detection.categories[0].score >= 0.4
+                    detection.categories[0].score >= 0.35
                 );
                 
-                const confidenceThreshold = hasHighConfidencePerson ? 0.25 : 0.4;
+                // Determine confidence threshold based on previous detection flag
+                let confidenceThreshold;
+                if (previousPositive) {
+                    confidenceThreshold = 0.15; // Previous frame had detection, be more lenient
+                } else if (hasHighConfidencePerson) {
+                    confidenceThreshold = 0.20; // Current frame has good detection
+                } else {
+                    confidenceThreshold = 0.35; // No detection context
+                }
                 
                 const personDetections = allPeople.filter(detection => {
                     const category = detection.categories[0];
                     if (category.score >= confidenceThreshold) {
                         const timestampStr = timestamp ? ` at ${timestamp}` : '';
-                        const thresholdNote = hasHighConfidencePerson && category.score < 0.5 ? ' (adaptive)' : '';
+                        let thresholdNote = '';
+                        if (category.score < 0.35) {
+                            if (previousPositive) {
+                                thresholdNote = ' (temporal)';
+                            } else if (hasHighConfidencePerson) {
+                                thresholdNote = ' (adaptive)';
+                            }
+                        }
                         console.log(`🏷️ Detected: ${category.categoryName} (${(category.score * 100).toFixed(1)}% confidence)${thresholdNote}${timestampStr}`);
                         return true;
                     }
@@ -324,6 +346,9 @@ async function detectPeople(imageData, scale, timestamp = null) {
             }
         }
         
+        // Update previousPositive flag for next frame
+        previousPositive = (results.people.length > 0 || results.faces.length > 0);
+        
         return results;
         
     } catch (error) {
@@ -357,6 +382,19 @@ function calculatePoseBoundingBox(keypoints) {
     };
 }
 
+function setProcessingDelegate(delegate) {
+    console.log(`🔧 Setting processing delegate to: ${delegate}`);
+    processingDelegate = delegate === 'gpu' ? 'GPU' : 'CPU';
+    
+    // Reset vision initialization to force re-creation with new delegate
+    visionInitialized = false;
+    faceDetector = null;
+    objectDetector = null;
+    previousPositive = false; // Reset temporal detection state
+    
+    return { success: true, delegate: processingDelegate };
+}
+
 // Create Rawr peer for the worker
 const peer = self.Rawr({
     transport: self.Rawr.transports.worker(),
@@ -367,7 +405,8 @@ const peer = self.Rawr({
         processAltitudeData,
         convertUnits,
         ping,
-        detectPeople
+        detectPeople,
+        setProcessingDelegate
     }
 });
 
