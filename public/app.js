@@ -261,6 +261,10 @@ class BikeTrailProcessor {
             localStorage.setItem('frameInterval', this.frameInterval.toString());
             // Update the process count display when interval changes
             this.updateProcessCount();
+            // Update FPS display structure if session is loaded
+            if (this.images && this.images.length > 0) {
+                this.initializeFPSDisplay();
+            }
         });
         
         document.getElementById('processingDelegate').addEventListener('change', (e) => {
@@ -374,6 +378,10 @@ class BikeTrailProcessor {
             
             document.getElementById('imageCount').textContent = data.count;
             this.updateProcessCount();
+            
+            // Pre-calculate and display FPS intervals structure
+            this.initializeFPSDisplay();
+            
             document.getElementById('sessionInfo').style.display = 'block';
             
             
@@ -552,6 +560,71 @@ class BikeTrailProcessor {
         }
     }
     
+    initializeFPSDisplay() {
+        if (!this.images || this.images.length === 0) return;
+        
+        const fpsDisplay = document.getElementById('fpsDisplay');
+        const fpsContainer = document.getElementById('fpsInfoContainer');
+        
+        if (!fpsDisplay || !fpsContainer) return;
+        
+        // Show the FPS container and calculate expected intervals
+        fpsContainer.style.display = 'block';
+        
+        // Calculate FPS intervals from timestamp data
+        this.calculatePreProcessingFPS();
+        
+        let display = `Processing performance (10% intervals):\n\n`;
+        
+        this.preCalculatedFPS.forEach((interval, index) => {
+            const percentStart = index * 10;
+            const percentEnd = Math.min(percentStart + 10, 100);
+            display += `${percentStart}%-${percentEnd}%: ${interval.fps.toFixed(1)} FPS avg (${interval.frames} frames, ${interval.avgTime.toFixed(1)}ms delta)\n`;
+        });
+        
+        fpsDisplay.textContent = display;
+    }
+    
+    calculatePreProcessingFPS() {
+        // Calculate FPS intervals from JSON timestamp data
+        const segments = 10;
+        const totalFramesToProcess = Math.ceil(this.images.length / this.frameInterval);
+        const segmentSize = Math.ceil(totalFramesToProcess / segments);
+        this.preCalculatedFPS = [];
+        
+        for (let seg = 0; seg < segments; seg++) {
+            const startIdx = seg * segmentSize * this.frameInterval;
+            const endIdx = Math.min(startIdx + (segmentSize * this.frameInterval), this.images.length);
+            
+            let totalTime = 0;
+            let frameCount = 0;
+            
+            for (let i = startIdx; i < endIdx - this.frameInterval; i += this.frameInterval) {
+                const currentFrame = this.images[i];
+                const nextFrame = this.images[i + this.frameInterval];
+                
+                if (currentFrame?.timestamp && nextFrame?.timestamp) {
+                    const timeDelta = nextFrame.timestamp - currentFrame.timestamp;
+                    // Cap at reasonable frame time (same logic as processing)
+                    const cappedTime = timeDelta > 50 ? 33 : timeDelta;
+                    totalTime += cappedTime;
+                    frameCount++;
+                }
+            }
+            
+            if (frameCount > 0) {
+                const avgTime = totalTime / frameCount;
+                const avgFPS = 1000 / avgTime;
+                
+                this.preCalculatedFPS.push({
+                    fps: avgFPS,
+                    frames: frameCount,
+                    avgTime: avgTime
+                });
+            }
+        }
+    }
+    
     updateFPSDisplay() {
         const fpsDisplay = document.getElementById('fpsDisplay');
         if (!fpsDisplay) return;
@@ -563,8 +636,11 @@ class BikeTrailProcessor {
             display += `${percentStart}%-${percentEnd}%: ${interval.fps.toFixed(1)} FPS (${interval.frames} frames, ${interval.avgTime.toFixed(1)}ms avg)\n`;
         });
         
-        if (display === '') {
-            display = 'Calculating FPS...';
+        // Show remaining pending intervals
+        for (let i = this.fpsIntervals.length; i < 10; i++) {
+            const percentStart = i * 10;
+            const percentEnd = Math.min(percentStart + 10, 100);
+            display += `${percentStart}%-${percentEnd}%: Pending...\n`;
         }
         
         fpsDisplay.textContent = display;
