@@ -17,7 +17,87 @@ class BikeTrailProcessor {
         this.altitudeUnit = localStorage.getItem('altitudeUnit') || 'ft'; // Load from localStorage or default to feet
         this.frameInterval = parseInt(localStorage.getItem('frameInterval') || '1'); // Load from localStorage or default to every frame
         
+        // Worker readiness state
+        this.workerDetectionReady = false;
+        
+        // Initialize web worker
+        this.initializeWorker();
+        
         this.init();
+    }
+
+    initializeWorker() {
+        try {
+            // Create web worker
+            this.worker = new Worker('worker.js');
+            
+            // Create Rawr RPC peer to communicate with worker
+            this.workerRpc = window.Rawr({
+                transport: window.Rawr.transports.worker(this.worker),
+                
+                // Methods that worker can call back to main thread
+                methods: {
+                    // Worker readiness notifications
+                    onWorkerReady: (notification) => {
+                        
+                        if (notification.type === 'detection-ready') {
+                            this.workerDetectionReady = true;
+                            
+                            // Update UI to show detection is available
+                            this.updateDetectionStatus('ready');
+                            
+                        } else if (notification.type === 'detection-error') {
+                            this.workerDetectionReady = false;
+                            console.warn('❌ Worker detection failed:', notification.error);
+                            
+                            // Update UI to show detection error
+                            this.updateDetectionStatus('error', notification.error);
+                            
+                        } else if (notification.type === 'detection-unavailable') {
+                            this.workerDetectionReady = false;
+                            
+                            // Update UI to show detection is disabled
+                            this.updateDetectionStatus('disabled', 'MediaPipe not available in worker');
+                        }
+                        
+                        return { received: true, timestamp: Date.now() };
+                    },
+                    
+                    // Progress updates from worker
+                    updateProgress: (progress) => {
+                        return { received: true };
+                    },
+                    
+                    logMessage: (message) => {
+                        return { logged: true };
+                    }
+                }
+            });
+            
+            // Set up worker error handler
+            this.worker.addEventListener('error', (error) => {
+                console.error('Worker error:', error);
+            });
+            
+            // Initialize worker with Rawr RPC
+            this.initializeWorkerRpc();
+                
+        } catch (error) {
+            console.error('Failed to create worker:', error);
+            this.worker = null;
+            this.workerRpc = null;
+        }
+    }
+
+    async initializeWorkerRpc() {
+        try {
+            // Test RPC connection and initialize worker
+            const result = await this.workerRpc.methods.init();
+            // Worker RPC initialized successfully
+            
+        } catch (error) {
+            console.error('Worker RPC initialization failed:', error);
+        }
     }
 
     async init() {
@@ -37,10 +117,10 @@ class BikeTrailProcessor {
     
     setupUnloadCleanup() {
         window.addEventListener('beforeunload', () => {
-            console.log('🧹 Cleaning up resources before page unload');
             this.stopScreenCapture();
             this.cleanupPopup();
             this.cleanupCanvas();
+            this.cleanupWorker();
         });
     }
     
@@ -64,19 +144,28 @@ class BikeTrailProcessor {
             this.ctx = null;
         }
     }
+
+    cleanupWorker() {
+        if (this.worker) {
+            this.worker.terminate();
+            this.worker = null;
+        }
+        
+        if (this.workerRpc) {
+            this.workerRpc = null;
+        }
+    }
     
     cleanupExistingPopups() {
         try {
             // Try to find and close any existing mapCapture popups
             if (window.mapCapturePopup && !window.mapCapturePopup.closed) {
                 window.mapCapturePopup.close();
-                console.log('Closed existing popup from previous session');
             }
             
             // Also check our instance variable
             if (this.mapPopup && !this.mapPopup.closed) {
                 this.mapPopup.close();
-                console.log('Closed existing instance popup');
             }
             
             // Reset popup references
@@ -216,7 +305,6 @@ class BikeTrailProcessor {
             
             // Reset iframe route flag for new session
             this.iframeRouteUpdated = false;
-            console.log('Reset iframe for new session');
             
             // Calculate altitude range for the entire dataset
             this.calculateAltitudeRange();
@@ -228,7 +316,6 @@ class BikeTrailProcessor {
             this.updateProcessCount();
             document.getElementById('sessionInfo').style.display = 'block';
             
-            console.log(`Loaded ${data.count} images from ${sessionName}`);
             
             // Reset button
             loadBtn.innerHTML = 'Load Session';
@@ -273,7 +360,6 @@ class BikeTrailProcessor {
         
         // If pausing for a long time, clean up screen capture to save resources
         if (this.isPaused) {
-            console.log('Processing paused, cleaning up screen capture to save memory');
             this.stopScreenCapture();
         }
     }
@@ -321,6 +407,14 @@ class BikeTrailProcessor {
             
             this.ctx.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
             
+            // Detect people and faces using worker for privacy blurring
+            const detectionResult = await this.detectPeopleAndFaces(img, imageData.timestamp);
+            
+            // Apply privacy blurring to detected people and faces
+            if (detectionResult && !detectionResult.fallback) {
+                this.applyPrivacyBlurring(detectionResult, img);
+            }
+            
             // Draw date/time in upper left corner
             this.drawDateTime(imageData.timestamp);
             
@@ -330,13 +424,13 @@ class BikeTrailProcessor {
             // Update detail map position (maps are now in popup)
             this.updateDetailMapPosition(imageData);
             
-            console.log(`Processing image ${index}: lat=${imageData.lat}, lon=${imageData.lon}`);
             
             // Capture iframe maps to hidden canvases
             await this.captureMapToCanvas();
             
             await this.addOverlays(imageData, index);
             
+            // Save all processed images
             const blob = await new Promise(resolve => {
                 this.canvas.toBlob(resolve, 'image/jpeg', 0.9);
             });
@@ -373,7 +467,7 @@ class BikeTrailProcessor {
         const actualMapWidth = 900;
         const actualMapHeight = 600;
         
-        const bottomLeft = { x: margin, y: this.canvas.height - actualMapHeight - margin };
+        const upperLeft = { x: margin - 30, y: margin - 24 };
         const topRight = { x: this.canvas.width - altitudeWidth - margin, y: margin, width: altitudeWidth, height: altitudeHeight };
         
         // Skip black rectangle backgrounds - just draw altitude meter background
@@ -381,8 +475,8 @@ class BikeTrailProcessor {
         this.ctx.fillRect(topRight.x, topRight.y, altitudeWidth, altitudeHeight);
         this.ctx.strokeRect(topRight.x, topRight.y, altitudeWidth, altitudeHeight);
         
-        // Only draw detail map (moved to bottom left, removed route map)
-        await this.drawDetailView(bottomLeft, mapWidth, mapHeight, imageData);
+        // Draw detail map in upper left corner
+        await this.drawDetailView(upperLeft, mapWidth, mapHeight, imageData);
         this.drawAltitudeChart(topRight, altitudeWidth, altitudeHeight, index);
         
         // Luis bike icons are already rendered inside the captured maps
@@ -599,7 +693,6 @@ class BikeTrailProcessor {
         this.altitudeRange.min = Math.min(...altitudes);
         this.altitudeRange.max = Math.max(...altitudes);
         
-        console.log(`Altitude range: ${this.altitudeRange.min.toFixed(0)}m - ${this.altitudeRange.max.toFixed(0)}m`);
     }
 
     updateMapsWithRoute() {
@@ -611,7 +704,6 @@ class BikeTrailProcessor {
 
         const routeCoords = gpsImages.map(img => [img.lat, img.lon]);
         
-        console.log('Sending route data to popup:', routeCoords.length, 'points');
         
         // Send route data to popup via postMessage
         this.mapPopup.postMessage({
@@ -627,10 +719,8 @@ class BikeTrailProcessor {
         if (firstPoint.compass !== null && firstPoint.compass !== undefined) {
             let rawBearing = firstPoint.compass;
             bearing = (rawBearing + 180) % 360;
-            console.log(`First point compass: ${rawBearing}° → flipped to ${bearing}°`);
         }
         
-        console.log('Setting initial detail position:', firstPoint.lat, firstPoint.lon, 'bearing:', bearing);
         
         this.mapPopup.postMessage({
             type: 'updateDetailPosition',
@@ -644,21 +734,18 @@ class BikeTrailProcessor {
     updateDetailMapPosition(currentImage) {
         if (!currentImage || !currentImage.lat || !currentImage.lon || !this.mapPopup) return;
         
-        console.log(`Image ${currentImage.filename}: compass=${currentImage.compass}, speed=${currentImage.speed}`);
         
         const currentIndex = this.images.indexOf(currentImage);
         let bearing = 90; // Default east
         
         if (currentIndex === 0) {
             // First frame: use its bearing
-            console.log(`First frame compass: ${currentImage.compass} (type: ${typeof currentImage.compass})`);
             
             if (currentImage.compass !== null && currentImage.compass !== undefined) {
                 bearing = currentImage.compass;
             } else {
                 bearing = 90; // fallback
             }
-            console.log(`First frame final bearing: ${bearing}`);
         } else {
             // Subsequent frames: check velocity and find next GPS-significant frame
             const speedMPS = currentImage.speed || 0;
@@ -682,7 +769,6 @@ class BikeTrailProcessor {
         
         this.lastValidBearing = bearing;
         
-        console.log(`Sending bearing ${bearing}° to popup (frame ${currentIndex})`);
         
         // Send position update to popup
         this.mapPopup.postMessage({
@@ -742,7 +828,6 @@ class BikeTrailProcessor {
             // Listen for popup ready message
             const readyListener = (event) => {
                 if (event.data && event.data.type === 'popupReady') {
-                    console.log('✅ Popup is ready, sending route data...');
                     window.removeEventListener('message', readyListener);
                     
                     // Send current route data to popup if we have it
@@ -759,15 +844,12 @@ class BikeTrailProcessor {
             // Timeout fallback in case message is missed
             setTimeout(() => {
                 window.removeEventListener('message', readyListener);
-                console.log('Timeout fallback - trying to manually trigger popup');
                 
                 // Try to manually trigger coordinate sending
                 try {
                     if (this.mapPopup && !this.mapPopup.closed) {
-                        console.log('Popup exists, trying to send coordinates manually...');
                         if (typeof this.mapPopup.sendMapCoordinates === 'function') {
                             this.mapPopup.sendMapCoordinates();
-                            console.log('✅ Manually triggered coordinate sending');
                         } else {
                             console.warn('sendMapCoordinates function not available on popup');
                         }
@@ -798,23 +880,15 @@ class BikeTrailProcessor {
     setupPopupMessageListener() {
         // Listen for messages from popup window
         this.popupMessageListener = (event) => {
-            console.log('🔍 All messages received:', {
-                data: event.data,
-                origin: event.origin,
-                type: event.data?.type,
-                fullData: JSON.stringify(event.data)
-            });
             
             if (event.data && event.data.type === 'mapCoordinates') {
                 this.mapCoordinates = event.data.coordinates;
-                console.log('✅ Successfully received map coordinates from popup:', this.mapCoordinates);
                 
                 // Store globally for debugging
                 window.debugMapCoordinates = this.mapCoordinates;
             }
             
             if (event.data && event.data.type === 'mapReady') {
-                console.log('🎯 Maps are ready for screenshot after:', event.data.updateType);
                 
                 // Resolve pending map update if we're waiting for it
                 if (this.mapUpdateResolver) {
@@ -825,7 +899,6 @@ class BikeTrailProcessor {
         };
         
         window.addEventListener('message', this.popupMessageListener);
-        console.log('🎯 Message listener set up, waiting for popup coordinates...');
     }
     
     cleanupPopup() {
@@ -852,7 +925,6 @@ class BikeTrailProcessor {
         this.mapCoordinates = null;
         window.mapCapturePopup = null;
         
-        console.log('Popup cleanup completed');
     }
 
     async captureMapToCanvas() {
@@ -863,12 +935,6 @@ class BikeTrailProcessor {
             const routeCanvas = await this.captureSpecificMapArea('routeMap');
             const detailCanvas = await this.captureSpecificMapArea('detailMap');
             
-            console.log('Captured canvases:', { 
-                routeCanvas: !!routeCanvas, 
-                detailCanvas: !!detailCanvas,
-                routeSize: routeCanvas ? `${routeCanvas.width}x${routeCanvas.height}` : 'null',
-                detailSize: detailCanvas ? `${detailCanvas.width}x${detailCanvas.height}` : 'null'
-            });
             
             if (routeCanvas && detailCanvas) {
                 const routeCtx = this.routeMapCanvas.getContext('2d');
@@ -896,11 +962,6 @@ class BikeTrailProcessor {
     }
     
     async captureSpecificMapArea(mapType) {
-        console.log(`🎬 Attempting to capture ${mapType}:`, {
-            captureVideo: !!this.captureVideo,
-            mapCoordinates: !!this.mapCoordinates,
-            mapCoords: this.mapCoordinates?.[mapType]
-        });
         
         if (!this.captureVideo || !this.mapCoordinates) {
             console.warn(`❌ Cannot capture ${mapType}: captureVideo=${!!this.captureVideo}, mapCoordinates=${!!this.mapCoordinates}`);
@@ -993,15 +1054,12 @@ class BikeTrailProcessor {
         if (platform.name === 'Windows') {
             // Windows can have fractional scaling (1.25, 1.5, etc.)
             // Screen capture might behave differently
-            console.log(`Windows detected, devicePixelRatio: ${devicePixelRatio}`);
             return devicePixelRatio;
         } else if (platform.name === 'Mac') {
             // Mac typically has clean 1x or 2x scaling
-            console.log(`Mac detected, devicePixelRatio: ${devicePixelRatio}`);
             return devicePixelRatio;
         } else if (platform.name === 'Linux') {
             // Linux can vary widely depending on desktop environment
-            console.log(`Linux detected, devicePixelRatio: ${devicePixelRatio}`);
             return devicePixelRatio;
         }
         
@@ -1297,9 +1355,9 @@ class BikeTrailProcessor {
         this.ctx.strokeStyle = '#000000';
         this.ctx.lineWidth = 2;
         
-        // Position in upper left corner with padding
+        // Position in bottom left corner with padding
         const x = 20;
-        const y = fontSize + 20;
+        const y = this.canvas.height - 20;
         
         // Draw text with black outline for visibility
         this.ctx.strokeText(dateTimeString, x, y);
@@ -1344,6 +1402,322 @@ class BikeTrailProcessor {
         this.ctx.fillText(speedString, x, y);
     }
 
+    applyPrivacyBlurring(detectionResult, img) {
+        // Scale factors to convert from detection coordinates to main canvas
+        const scaleX = this.canvas.width / img.width;
+        const scaleY = this.canvas.height / img.height;
+        
+        // Log only when multiple people are detected
+        if (detectionResult.people?.length > 1) {
+            console.log(`🎯 Processing ${detectionResult.people.length} people for blurring`);
+        }
+        
+        // Blur detected people
+        detectionResult.people.forEach((person, index) => {
+            if (person.boundingBox) {
+                const x = person.boundingBox.x * scaleX;
+                const y = person.boundingBox.y * scaleY;
+                const width = person.boundingBox.width * scaleX;
+                const height = person.boundingBox.height * scaleY;
+                
+                console.log(`🫥 Blurring person ${index}: x=${x.toFixed(0)}, y=${y.toFixed(0)}, w=${width.toFixed(0)}, h=${height.toFixed(0)} (confidence: ${(person.confidence * 100).toFixed(1)}%)`);
+                
+                this.blurEllipticalArea(x, y, width, height);
+            }
+        });
+        
+        // Blur detected faces
+        detectionResult.faces.forEach((face, index) => {
+            if (face.boundingBox) {
+                const x = face.boundingBox.x * scaleX;
+                const y = face.boundingBox.y * scaleY;
+                const width = face.boundingBox.width * scaleX;
+                const height = face.boundingBox.height * scaleY;
+                
+                console.log(`😶‍🌫️ Blurring face ${index}: x=${x.toFixed(0)}, y=${y.toFixed(0)}, w=${width.toFixed(0)}, h=${height.toFixed(0)} (confidence: ${(face.confidence * 100).toFixed(1)}%)`);
+                
+                this.blurEllipticalArea(x, y, width, height);
+            }
+        });
+    }
+    
+    blurEllipticalArea(x, y, width, height) {
+        // Make ellipse 5% bigger for softer edges
+        const sizeIncrease = 0.05;
+        const expandedWidth = width * (1 + sizeIncrease);
+        const expandedHeight = height * (1 + sizeIncrease);
+        const expandedX = x - (expandedWidth - width) / 2;
+        const expandedY = y - (expandedHeight - height) / 2;
+        
+        // Create a temporary canvas for the blur effect
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        // Scale padding and blur relative to detection size
+        const avgSize = (expandedWidth + expandedHeight) / 2;
+        const padding = Math.max(20, avgSize * 0.15);  // 15% of detection size, minimum 20px
+        const blurRadius = Math.max(8, avgSize * 0.08); // 8% of detection size, minimum 8px
+        
+        const blurX = Math.max(0, expandedX - padding);
+        const blurY = Math.max(0, expandedY - padding);
+        const blurWidth = expandedWidth + (padding * 2);
+        const blurHeight = expandedHeight + (padding * 2);
+        
+        tempCanvas.width = blurWidth;
+        tempCanvas.height = blurHeight;
+        
+        // Copy the area to be blurred
+        tempCtx.drawImage(
+            this.canvas,
+            blurX, blurY, blurWidth, blurHeight,
+            0, 0, blurWidth, blurHeight
+        );
+        
+        // Apply blur scaled to detection size
+        tempCtx.filter = `blur(${blurRadius}px)`;
+        tempCtx.drawImage(tempCanvas, 0, 0);
+        tempCtx.filter = 'none';
+        
+        // Create an alpha mask for soft edges
+        const maskCanvas = document.createElement('canvas');
+        const maskCtx = maskCanvas.getContext('2d');
+        maskCanvas.width = blurWidth;
+        maskCanvas.height = blurHeight;
+        
+        // Create radial gradient from center
+        const centerX = (expandedX - blurX) + expandedWidth/2;
+        const centerY = (expandedY - blurY) + expandedHeight/2;
+        const radiusX = expandedWidth/2;
+        const radiusY = expandedHeight/2;
+        
+        // Use manual ellipse drawing with gradient
+        maskCtx.save();
+        maskCtx.translate(centerX, centerY);
+        maskCtx.scale(1, radiusY/radiusX);
+        
+        // Create circular gradient (will become elliptical due to scale)
+        const gradient = maskCtx.createRadialGradient(0, 0, radiusX * 0.6, 0, 0, radiusX);
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');    // Full opacity at center
+        gradient.addColorStop(0.8, 'rgba(255, 255, 255, 1)');  // Full opacity until 80%
+        gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');    // Fade to transparent
+        
+        maskCtx.fillStyle = gradient;
+        maskCtx.beginPath();
+        maskCtx.arc(0, 0, radiusX, 0, 2 * Math.PI);
+        maskCtx.fill();
+        maskCtx.restore();
+        
+        // Apply mask to blurred content
+        tempCtx.globalCompositeOperation = 'destination-in';
+        tempCtx.drawImage(maskCanvas, 0, 0);
+        
+        // Draw the masked blur back to main canvas
+        this.ctx.drawImage(tempCanvas, blurX, blurY);
+    }
+
+    async detectPeopleAndFaces(img, timestamp = null) {
+        // Skip detection entirely if worker isn't available
+        if (!this.workerRpc) {
+            return { people: [], faces: [], error: 'Worker not available' };
+        }
+        
+        try {
+            // Create offscreen canvas 960x540
+            const offscreenCanvas = new OffscreenCanvas(960, 540);
+            const offscreenCtx = offscreenCanvas.getContext('2d');
+            
+            // Draw scaled image to offscreen canvas
+            offscreenCtx.drawImage(img, 0, 0, 960, 540);
+            
+            // Get image data for worker
+            const imageData = offscreenCtx.getImageData(0, 0, 960, 540);
+            
+            // Calculate scale factor (original image size vs 960x540)
+            const scaleX = img.width / 960;
+            const scaleY = img.height / 540;
+            const scale = { x: scaleX, y: scaleY };
+            
+            // Send to worker for detection with transferable objects
+            const detectionResult = await this.workerRpc.methodsExt.detectPeople(imageData, scale, timestamp, { postMessageOptions: { transfer: [imageData.data.buffer] } });
+            
+            // Only show detections if we got actual results, not fallback responses
+            if (!detectionResult.fallback && (detectionResult.people.length > 0 || detectionResult.faces.length > 0)) {
+                this.displayDetectedCrops(img, detectionResult);
+            } else if (detectionResult.fallback) {
+                // MediaPipe not available, silently continue without detection
+                return { people: [], faces: [], disabled: true };
+            }
+            
+            return detectionResult;
+            
+        } catch (error) {
+            console.warn('People detection failed:', error.message);
+            return { people: [], faces: [], error: error.message };
+        }
+    }
+
+    updateDetectionStatus(status, error = null) {
+        // Update UI to show detection readiness
+        const statusElement = document.getElementById('detection-status');
+        if (!statusElement) {
+            // Create status element if it doesn't exist
+            const statusDiv = document.createElement('div');
+            statusDiv.id = 'detection-status';
+            statusDiv.style.cssText = `
+                position: fixed;
+                bottom: 10px;
+                left: 10px;
+                padding: 8px 12px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: bold;
+                z-index: 1001;
+            `;
+            document.body.appendChild(statusDiv);
+        }
+        
+        const statusEl = document.getElementById('detection-status');
+        
+        switch (status) {
+            case 'ready':
+                statusEl.textContent = '🔍 Detection Ready';
+                statusEl.style.backgroundColor = '#4CAF50';
+                statusEl.style.color = 'white';
+                break;
+            case 'error':
+                statusEl.textContent = `❌ Detection Error: ${error}`;
+                statusEl.style.backgroundColor = '#f44336';
+                statusEl.style.color = 'white';
+                break;
+            case 'disabled':
+                statusEl.textContent = '🚫 Detection Disabled';
+                statusEl.style.backgroundColor = '#607d8b';
+                statusEl.style.color = 'white';
+                break;
+            case 'initializing':
+                statusEl.textContent = '⏳ Loading Detection Models...';
+                statusEl.style.backgroundColor = '#ff9800';
+                statusEl.style.color = 'white';
+                break;
+            default:
+                statusEl.textContent = '🔍 Detection Status Unknown';
+                statusEl.style.backgroundColor = '#9e9e9e';
+                statusEl.style.color = 'white';
+        }
+    }
+
+    displayDetectedCrops(img, detectionResult) {
+        // Create or get the detections container
+        let container = document.getElementById('detections-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'detections-container';
+            container.style.cssText = `
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                max-width: 300px;
+                max-height: 80vh;
+                overflow-y: auto;
+                background: rgba(0, 0, 0, 0.8);
+                border-radius: 8px;
+                padding: 10px;
+                z-index: 1000;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            `;
+            document.body.appendChild(container);
+        }
+
+        // Process face detections
+        detectionResult.faces.forEach((face, index) => {
+            if (face.boundingBox) {
+                const croppedImage = this.cropDetection(img, face.boundingBox, `face-${index}`, 'red', face.confidence);
+                if (croppedImage) {
+                    container.appendChild(croppedImage);
+                }
+            }
+        });
+
+        // Process people detections
+        detectionResult.people.forEach((person, index) => {
+            if (person.boundingBox) {
+                const croppedImage = this.cropDetection(img, person.boundingBox, `person-${index}`, 'green', person.confidence);
+                if (croppedImage) {
+                    container.appendChild(croppedImage);
+                }
+            }
+        });
+
+        // Limit container to last 10 detections to prevent overflow
+        while (container.children.length > 10) {
+            container.removeChild(container.firstChild);
+        }
+    }
+
+    cropDetection(img, boundingBox, label, borderColor = 'green', confidence = 1.0) {
+        try {
+            // Add padding around the bounding box
+            const padding = 20;
+            const x = Math.max(0, boundingBox.x - padding);
+            const y = Math.max(0, boundingBox.y - padding);
+            const width = Math.min(img.width - x, boundingBox.width + (padding * 2));
+            const height = Math.min(img.height - y, boundingBox.height + (padding * 2));
+
+            // Create a canvas to crop the detection
+            const cropCanvas = document.createElement('canvas');
+            const cropCtx = cropCanvas.getContext('2d');
+            
+            // Set canvas size to cropped area
+            cropCanvas.width = width;
+            cropCanvas.height = height;
+            
+            // Draw the cropped portion of the image
+            cropCtx.drawImage(
+                img,
+                x, y, width, height,  // Source rectangle
+                0, 0, width, height   // Destination rectangle
+            );
+            
+            // Draw confidence percentage overlay (50% of image width)
+            const confidenceText = `${(confidence * 100).toFixed(0)}%`;
+            const fontSize = Math.max(width * 0.5, 20); // 50% of image width, minimum 20px
+            cropCtx.font = `bold ${fontSize}px Arial`;
+            
+            // Center the text
+            const textMetrics = cropCtx.measureText(confidenceText);
+            const textX = (width - textMetrics.width) / 2;
+            const textY = (height + fontSize) / 2;
+            
+            // Draw white text with black outline
+            cropCtx.strokeStyle = 'black';
+            cropCtx.lineWidth = 3;
+            cropCtx.strokeText(confidenceText, textX, textY);
+            
+            cropCtx.fillStyle = 'white';
+            cropCtx.fillText(confidenceText, textX, textY);
+
+            // Create img element to display
+            const croppedImg = document.createElement('img');
+            croppedImg.src = cropCanvas.toDataURL();
+            croppedImg.style.cssText = `
+                max-width: 150px;
+                max-height: 100px;
+                border: 2px solid ${borderColor};
+                border-radius: 4px;
+                display: block;
+            `;
+            croppedImg.title = `${label} - ${boundingBox.width.toFixed(0)}x${boundingBox.height.toFixed(0)}`;
+
+            return croppedImg;
+
+        } catch (error) {
+            console.error('Error cropping detection:', error);
+            return null;
+        }
+    }
+
     async uploadImage(blob, timestamp) {
         try {
             const response = await fetch(`/api/upload/${this.currentSession}/${timestamp}`, {
@@ -1378,7 +1752,6 @@ class BikeTrailProcessor {
         // Clean up screen capture
         this.stopScreenCapture();
         
-        console.log('Processing complete!');
     }
 
     // Cache Management Methods
