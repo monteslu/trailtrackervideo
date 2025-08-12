@@ -16,6 +16,7 @@ class BikeTrailProcessor {
         this.detailMapCanvas = null;
         this.altitudeUnit = localStorage.getItem('altitudeUnit') || 'ft'; // Load from localStorage or default to feet
         this.frameInterval = parseInt(localStorage.getItem('frameInterval') || '1'); // Load from localStorage or default to every frame
+        this.processingDelegate = localStorage.getItem('processingDelegate') || 'cpu'; // Load from localStorage or default to CPU
         
         // Worker readiness state
         this.workerDetectionReady = false;
@@ -23,6 +24,11 @@ class BikeTrailProcessor {
         // Time tracking for estimation
         this.processingStartTime = null;
         this.frameTimes = [];
+        
+        // FPS tracking for 10% intervals
+        this.fpsIntervals = [];
+        this.currentIntervalFrameTimes = [];
+        this.lastFrameEndTime = null;
         
         // Debug mode for map capture
         this.debugMapCapture = false;
@@ -257,6 +263,11 @@ class BikeTrailProcessor {
             this.updateProcessCount();
         });
         
+        document.getElementById('processingDelegate').addEventListener('change', (e) => {
+            this.processingDelegate = e.target.value;
+            localStorage.setItem('processingDelegate', this.processingDelegate);
+        });
+        
         // Cache management event listeners
         document.getElementById('refreshCacheBtn').addEventListener('click', () => this.loadCacheStats());
         document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
@@ -298,6 +309,12 @@ class BikeTrailProcessor {
         const frameIntervalSelect = document.getElementById('frameInterval');
         if (frameIntervalSelect) {
             frameIntervalSelect.value = this.frameInterval.toString();
+        }
+        
+        // Set the processing delegate dropdown to the loaded/default value
+        const processingDelegateSelect = document.getElementById('processingDelegate');
+        if (processingDelegateSelect) {
+            processingDelegateSelect.value = this.processingDelegate;
         }
     }
     
@@ -387,6 +404,23 @@ class BikeTrailProcessor {
         document.getElementById('startBtn').style.display = 'none';
         document.getElementById('pauseBtn').style.display = 'inline-block';
         document.getElementById('progressContainer').style.display = 'block';
+        document.getElementById('fpsInfoContainer').style.display = 'block';
+        
+        // Hide detection ready message after processing starts
+        const statusElement = document.getElementById('detection-status');
+        if (statusElement) {
+            statusElement.style.display = 'none';
+        }
+        
+        // Configure worker with processing delegate preference
+        if (this.workerRpc) {
+            try {
+                await this.workerRpc.methods.setProcessingDelegate(this.processingDelegate);
+                console.log(`Processing delegate set to: ${this.processingDelegate}`);
+            } catch (error) {
+                console.warn('Failed to set processing delegate:', error);
+            }
+        }
         
         // Initialize screen capture once at the start (or reinitialize if needed)
         if (!this.captureStream) {
@@ -416,6 +450,11 @@ class BikeTrailProcessor {
         this.processingStartTime = Date.now();
         this.frameTimes = [];
         
+        // Reset FPS tracking
+        this.fpsIntervals = [];
+        this.currentIntervalFrameTimes = [];
+        this.lastFrameEndTime = null;
+        
         // Reset debug logging for new session
         this.debugLogged = false;
         
@@ -436,7 +475,11 @@ class BikeTrailProcessor {
             processedFrames++;
             
             // Track frame processing time
-            this.frameTimes.push(frameEndTime - frameStartTime);
+            const frameProcessingTime = frameEndTime - frameStartTime;
+            this.frameTimes.push(frameProcessingTime);
+            
+            // Track FPS data with pause detection
+            this.trackFrameFPS(frameStartTime, frameEndTime, processedFrames, totalFramesToProcess);
             
             // Calculate and show time estimate after 2 frames
             let timeEstimate = null;
@@ -469,6 +512,62 @@ class BikeTrailProcessor {
         } else {
             return `${seconds}s`;
         }
+    }
+    
+    trackFrameFPS(frameStartTime, frameEndTime, processedFrames, totalFramesToProcess) {
+        // Calculate delta since last frame (for pause detection)
+        let frameDelta = frameEndTime - frameStartTime;
+        if (this.lastFrameEndTime) {
+            const timeSinceLastFrame = frameStartTime - this.lastFrameEndTime;
+            // If gap > 50ms, assume pause was hit - use 33ms instead (30 FPS)
+            if (timeSinceLastFrame > 50) {
+                frameDelta = 33;
+            }
+        }
+        
+        this.lastFrameEndTime = frameEndTime;
+        this.currentIntervalFrameTimes.push(frameDelta);
+        
+        // Check if we've completed a 10% interval
+        const intervalSize = Math.ceil(totalFramesToProcess / 10);
+        if (processedFrames % intervalSize === 0 || processedFrames === totalFramesToProcess) {
+            // Calculate average FPS for this interval
+            const totalTime = this.currentIntervalFrameTimes.reduce((sum, time) => sum + time, 0);
+            const avgTime = totalTime / this.currentIntervalFrameTimes.length;
+            const avgFPS = 1000 / avgTime; // Convert ms to FPS
+            
+            const intervalNumber = Math.ceil(processedFrames / intervalSize);
+            this.fpsIntervals.push({
+                interval: intervalNumber,
+                fps: avgFPS,
+                frames: this.currentIntervalFrameTimes.length,
+                avgTime: avgTime
+            });
+            
+            // Reset for next interval
+            this.currentIntervalFrameTimes = [];
+            
+            // Update display
+            this.updateFPSDisplay();
+        }
+    }
+    
+    updateFPSDisplay() {
+        const fpsDisplay = document.getElementById('fpsDisplay');
+        if (!fpsDisplay) return;
+        
+        let display = '';
+        this.fpsIntervals.forEach((interval, index) => {
+            const percentStart = (index * 10);
+            const percentEnd = Math.min(percentStart + 10, 100);
+            display += `${percentStart}%-${percentEnd}%: ${interval.fps.toFixed(1)} FPS (${interval.frames} frames, ${interval.avgTime.toFixed(1)}ms avg)\n`;
+        });
+        
+        if (display === '') {
+            display = 'Calculating FPS...';
+        }
+        
+        fpsDisplay.textContent = display;
     }
 
     async processImage(imageData, index) {
@@ -577,8 +676,19 @@ class BikeTrailProcessor {
             this.detailMapCanvas.height = cropHeight;
         }
         
-        // Draw the detail map canvas directly to main canvas
-        this.ctx.drawImage(this.detailMapCanvas, pos.x, pos.y);
+        // Get paint zoom multiplier
+        const paintZoom = parseFloat(localStorage.getItem('detailPaintZoom') || '1.0');
+        
+        // Calculate zoomed dimensions
+        const zoomedWidth = this.detailMapCanvas.width * paintZoom;
+        const zoomedHeight = this.detailMapCanvas.height * paintZoom;
+        
+        // Draw the detail map canvas with zoom applied (position stays same, size changes)
+        this.ctx.drawImage(
+            this.detailMapCanvas, 
+            pos.x, pos.y, 
+            zoomedWidth, zoomedHeight
+        );
     }
     
     createRoundedRectPath(x, y, width, height, radius) {
@@ -1304,8 +1414,8 @@ class BikeTrailProcessor {
     }
     
     initializeCropSelector() {
-        const sliders = ['cropX', 'cropY', 'cropWidth', 'cropHeight'];
-        const defaults = { cropX: 200, cropY: 100, cropWidth: 600, cropHeight: 400 };
+        const sliders = ['cropX', 'cropY', 'cropWidth', 'cropHeight', 'detailPaintZoom'];
+        const defaults = { cropX: 200, cropY: 100, cropWidth: 600, cropHeight: 400, detailPaintZoom: 1.0 };
         
         // Load values from localStorage and update sliders
         sliders.forEach(id => {
@@ -1795,33 +1905,96 @@ CROP COORDINATES:
         // Convert altitude range to selected unit for display
         const displayedAltRange = this.getAltitudeInUnit(this.altitudeRange.max) - this.getAltitudeInUnit(this.altitudeRange.min);
         
-        // Draw altitude bar graph for ALL frames (smooth detailed chart)
-        this.ctx.fillStyle = 'rgba(52, 152, 219, 0.3)';
-        const barWidth = Math.max(1, chartWidth / this.images.length);
+        // Create 20 smoothed segments with averaged altitudes
+        const segments = 20;
+        const segmentSize = Math.ceil(this.images.length / segments);
+        const smoothedAltitudes = [];
         
-        for (let i = 0; i < this.images.length; i++) {
-            const alt = this.images[i]?.alt || 0;
-            if (alt === 0) continue;
+        for (let seg = 0; seg < segments; seg++) {
+            const startIdx = seg * segmentSize;
+            const endIdx = Math.min(startIdx + segmentSize, this.images.length);
             
+            // Calculate average altitude for this segment
+            let altSum = 0;
+            let altCount = 0;
+            
+            for (let i = startIdx; i < endIdx; i++) {
+                const alt = this.images[i]?.alt || 0;
+                if (alt > 0) {
+                    altSum += alt;
+                    altCount++;
+                }
+            }
+            
+            if (altCount > 0) {
+                smoothedAltitudes.push(altSum / altCount);
+            }
+        }
+        
+        // Draw smooth altitude line chart with averaged segments
+        this.ctx.strokeStyle = 'rgba(52, 152, 219, 0.8)';
+        this.ctx.lineWidth = 3;
+        this.ctx.beginPath();
+        
+        // Also fill area under the curve
+        this.ctx.fillStyle = 'rgba(52, 152, 219, 0.2)';
+        const fillPath = new Path2D();
+        
+        let firstPoint = true;
+        smoothedAltitudes.forEach((alt, segmentIndex) => {
             // Relative altitude: 0 = min altitude, max = total elevation gain
             const relativeAlt = alt - this.altitudeRange.min;
             const normalizedHeight = (relativeAlt / altRange) * chartHeight;
-            const barHeight = Math.max(1, normalizedHeight);
-            const x = chartX + (i / this.images.length) * chartWidth;
-            const y = chartY + chartHeight - barHeight;
+            const x = chartX + (segmentIndex / (segments - 1)) * chartWidth;
+            const y = chartY + chartHeight - normalizedHeight;
             
-            this.ctx.fillRect(x, y, barWidth, barHeight);
+            if (firstPoint) {
+                this.ctx.moveTo(x, y);
+                fillPath.moveTo(x, chartY + chartHeight);
+                fillPath.lineTo(x, y);
+                firstPoint = false;
+            } else {
+                this.ctx.lineTo(x, y);
+                fillPath.lineTo(x, y);
+            }
+        });
+        
+        // Complete fill path
+        if (!firstPoint) {
+            const lastX = chartX + chartWidth;
+            fillPath.lineTo(lastX, chartY + chartHeight);
+            fillPath.closePath();
+            
+            // Draw fill and stroke
+            this.ctx.fill(fillPath);
+            this.ctx.stroke();
         }
         
-        // Draw bike marker at current position (accounts for frame interval)
-        if (currentAlt > 0) {
-            // Position bike marker based on actual currentIndex in the full dataset
-            const markerX = chartX + (currentIndex / this.images.length) * chartWidth;
-            const relativeCurrentAlt = currentAlt - this.altitudeRange.min;
-            const markerHeight = (relativeCurrentAlt / altRange) * chartHeight;
+        // Draw bike marker at current position following the smoothed curve
+        if (currentAlt > 0 && smoothedAltitudes.length > 0) {
+            // Find which smoothed segment the current index falls into
+            const progressThroughData = currentIndex / this.images.length;
+            const segmentFloat = progressThroughData * (segments - 1);
+            const segmentIndex = Math.min(Math.floor(segmentFloat), smoothedAltitudes.length - 1);
+            
+            // Interpolate between segments for smooth bike movement
+            let smoothedAlt;
+            if (segmentIndex < smoothedAltitudes.length - 1) {
+                const t = segmentFloat - segmentIndex;
+                const alt1 = smoothedAltitudes[segmentIndex];
+                const alt2 = smoothedAltitudes[segmentIndex + 1];
+                smoothedAlt = alt1 + (alt2 - alt1) * t;
+            } else {
+                smoothedAlt = smoothedAltitudes[segmentIndex];
+            }
+            
+            // Position bike marker on smoothed curve
+            const markerX = chartX + progressThroughData * chartWidth;
+            const relativeSmoothedAlt = smoothedAlt - this.altitudeRange.min;
+            const markerHeight = (relativeSmoothedAlt / altRange) * chartHeight;
             const markerY = chartY + chartHeight - markerHeight;
             
-            // Draw bike icon just above the current bar (bike bottom at bar top)
+            // Draw bike icon without tilt (looks better)
             this.drawBikeIconAtPosition(markerX, markerY);
         }
         
@@ -1970,7 +2143,7 @@ CROP COORDINATES:
                 
                 console.log(`🫥 Blurring person ${index}: x=${x.toFixed(0)}, y=${y.toFixed(0)}, w=${width.toFixed(0)}, h=${height.toFixed(0)} (confidence: ${(person.confidence * 100).toFixed(1)}%)`);
                 
-                this.blurEllipticalArea(x, y, width, height);
+                this.blurRoundedRectArea(x, y, width, height);
             }
         });
         
@@ -1984,14 +2157,14 @@ CROP COORDINATES:
                 
                 console.log(`😶‍🌫️ Blurring face ${index}: x=${x.toFixed(0)}, y=${y.toFixed(0)}, w=${width.toFixed(0)}, h=${height.toFixed(0)} (confidence: ${(face.confidence * 100).toFixed(1)}%)`);
                 
-                this.blurEllipticalArea(x, y, width, height);
+                this.blurRoundedRectArea(x, y, width, height);
             }
         });
     }
     
-    blurEllipticalArea(x, y, width, height) {
-        // Make ellipse 5% bigger for softer edges
-        const sizeIncrease = 0.05;
+    blurRoundedRectArea(x, y, width, height) {
+        // Make blur area 25% bigger for better privacy coverage
+        const sizeIncrease = 0.25;
         const expandedWidth = width * (1 + sizeIncrease);
         const expandedHeight = height * (1 + sizeIncrease);
         const expandedX = x - (expandedWidth - width) / 2;
@@ -2032,26 +2205,30 @@ CROP COORDINATES:
         maskCanvas.width = blurWidth;
         maskCanvas.height = blurHeight;
         
-        // Create radial gradient from center
-        const centerX = (expandedX - blurX) + expandedWidth/2;
-        const centerY = (expandedY - blurY) + expandedHeight/2;
-        const radiusX = expandedWidth/2;
-        const radiusY = expandedHeight/2;
+        // Calculate rounded rectangle parameters
+        const rectX = expandedX - blurX;
+        const rectY = expandedY - blurY;
+        const rectWidth = expandedWidth;
+        const rectHeight = expandedHeight;
+        const cornerRadius = Math.min(rectWidth, rectHeight) * 0.15; // 15% of smaller dimension
         
-        // Use manual ellipse drawing with gradient
+        // Create rounded rectangle with gradient for soft edges
         maskCtx.save();
-        maskCtx.translate(centerX, centerY);
-        maskCtx.scale(1, radiusY/radiusX);
         
-        // Create circular gradient (will become elliptical due to scale)
-        const gradient = maskCtx.createRadialGradient(0, 0, radiusX * 0.6, 0, 0, radiusX);
+        // Create gradient from center outward for soft edges
+        const centerX = rectX + rectWidth/2;
+        const centerY = rectY + rectHeight/2;
+        const maxRadius = Math.max(rectWidth, rectHeight) / 2;
+        const gradient = maskCtx.createRadialGradient(centerX, centerY, maxRadius * 0.6, centerX, centerY, maxRadius);
         gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');    // Full opacity at center
         gradient.addColorStop(0.8, 'rgba(255, 255, 255, 1)');  // Full opacity until 80%
         gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');    // Fade to transparent
         
         maskCtx.fillStyle = gradient;
+        
+        // Draw rounded rectangle
         maskCtx.beginPath();
-        maskCtx.arc(0, 0, radiusX, 0, 2 * Math.PI);
+        maskCtx.roundRect(rectX, rectY, rectWidth, rectHeight, cornerRadius);
         maskCtx.fill();
         maskCtx.restore();
         
@@ -2301,6 +2478,15 @@ CROP COORDINATES:
         document.getElementById('pauseBtn').style.display = 'none';
         document.getElementById('startBtn').textContent = 'Processing Complete';
         document.getElementById('startBtn').disabled = true;
+        
+        // Keep FPS info visible after completion for review
+        // document.getElementById('fpsInfoContainer').style.display = 'none';
+        
+        // Show detection ready message again if worker is ready
+        const statusElement = document.getElementById('detection-status');
+        if (statusElement && this.workerDetectionReady) {
+            statusElement.style.display = 'block';
+        }
         
         // Clean up screen capture
         this.stopScreenCapture();
