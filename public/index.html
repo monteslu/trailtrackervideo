@@ -56,6 +56,25 @@
                             <option value="gpu">GPU</option>
                         </select>
                     </div>
+                    <div class="unit-selector">
+                        <label for="detailZoom">Detail Zoom:</label>
+                        <select id="detailZoom">
+                            <option value="5">5 - Region</option>
+                            <option value="6">6 - Area</option>
+                            <option value="7">7 - District</option>
+                            <option value="8">8 - City</option>
+                            <option value="9">9 - Town</option>
+                            <option value="10">10 - Suburb</option>
+                            <option value="11">11 - Large Road</option>
+                            <option value="12">12 - Road</option>
+                            <option value="13">13 - Small Road</option>
+                            <option value="14">14 - Street</option>
+                            <option value="15">15 - Detailed</option>
+                            <option value="16">16 - Very Detailed</option>
+                            <option value="17" selected>17 - Street Level</option>
+                            <option value="18">18 - Max Detail</option>
+                        </select>
+                    </div>
                 </div>
             </div>
         </div>
@@ -155,18 +174,31 @@
             Debug output will appear here...
         </div>
 
-        <div class="canvas-container">
-            <canvas id="canvas" width="2560" height="1440"></canvas>
+        <div class="main-display">
+            <div class="canvas-container">
+                <!-- Display canvas - only updated when sending to server -->
+                <canvas id="displayCanvas" width="2560" height="1440"></canvas>
+                
+                <!-- Hidden offscreen canvas for composition -->
+                <canvas id="canvas" width="2560" height="1440" style="display: none;"></canvas>
+                
+                <!-- Hidden canvases for compositing -->
+                <canvas id="routeMapCanvas" width="600" height="400" style="display: none;"></canvas>
+                <canvas id="detailMapCanvas" width="600" height="400" style="display: none;"></canvas>
+            </div>
             
-            <!-- Hidden canvases for compositing -->
-            <canvas id="routeMapCanvas" width="600" height="400" style="display: none;"></canvas>
-            <canvas id="detailMapCanvas" width="600" height="400" style="display: none;"></canvas>
+            <div class="detections-sidebar">
+                <h3>🔍 Detected People</h3>
+                <div id="detections-container" class="detections-list">
+                    <p class="no-detections">No detections yet</p>
+                </div>
+            </div>
         </div>
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
     <script src="https://unpkg.com/rawr@0.19.0/dist/bundle.js"></script>
-    <script src="app.js"></script>
+    <script type="module" src="main.js"></script>
 </body>
 </html>
