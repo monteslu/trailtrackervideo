@@ -1,22 +1,34 @@
+import { formatTimeEstimate, formatVideoDuration } from './timeUtils.js';
+import { calculateBearing, calculateTotalDistance, calculateDistance } from './gpsUtils.js';
+import { metersToFeet, getAltitudeInUnit, getUnitLabel, formatDistance, calculateVirtualSpeed } from './altitudeUtils.js';
+import { getStorageItem, getStorageInt, getStorageFloat, setStorageItem } from './storageUtils.js';
+import { getElementById, setElementText, showElement, hideElement } from './domUtils.js';
+import { updateProgress, setButtonLoading, setButtonNormal, showProcessingUI, hideProcessingUI, updatePauseButton } from './uiStateUtils.js';
+
 class BikeTrailProcessor {
     constructor() {
-        this.canvas = document.getElementById('canvas');
+        this.canvas = getElementById('canvas'); // Offscreen composition canvas
         this.ctx = this.canvas.getContext('2d');
+        this.displayCanvas = getElementById('displayCanvas'); // Visible display canvas
+        this.displayCtx = this.displayCanvas.getContext('2d');
         this.currentSession = null;
         this.images = [];
         this.currentIndex = 0;
         this.isProcessing = false;
         this.isPaused = false;
         this.altitudeRange = { min: 0, max: 0 };
+        this.totalDistance = 0; // Total route distance in meters
+        this.processedDistance = 0; // Distance covered so far in processing
         this.bikeIcon = null;
         this.routeMap = null;
         this.lastValidBearing = 90; // Default to east
         this.detailMap = null;
         this.routeMapCanvas = null;
         this.detailMapCanvas = null;
-        this.altitudeUnit = localStorage.getItem('altitudeUnit') || 'ft'; // Load from localStorage or default to feet
-        this.frameInterval = parseInt(localStorage.getItem('frameInterval') || '1'); // Load from localStorage or default to every frame
-        this.processingDelegate = localStorage.getItem('processingDelegate') || 'cpu'; // Load from localStorage or default to CPU
+        this.altitudeUnit = getStorageItem('altitudeUnit', 'ft'); // Load from localStorage or default to feet
+        this.frameInterval = getStorageInt('frameInterval', 1); // Load from localStorage or default to every frame
+        this.processingDelegate = getStorageItem('processingDelegate', 'cpu'); // Load from localStorage or default to CPU
+        this.detailZoom = getStorageInt('detailZoom', 17); // Load from localStorage or default to street level
         
         // Worker readiness state
         this.workerDetectionReady = false;
@@ -38,7 +50,7 @@ class BikeTrailProcessor {
         
         // Crop area selector
         this.cropAreaOverride = null;
-        this.cropPreviewCanvas = document.getElementById('cropPreviewCanvas');
+        this.cropPreviewCanvas = getElementById('cropPreviewCanvas');
         this.cropPreviewCtx = this.cropPreviewCanvas.getContext('2d');
         
         // Popup capture canvas
@@ -165,8 +177,15 @@ class BikeTrailProcessor {
             this.canvas.width = 1;
             this.canvas.height = 1;
         }
+        if (this.displayCanvas) {
+            this.displayCanvas.width = 1;
+            this.displayCanvas.height = 1;
+        }
         if (this.ctx) {
             this.ctx = null;
+        }
+        if (this.displayCtx) {
+            this.displayCtx = null;
         }
     }
 
@@ -254,11 +273,13 @@ class BikeTrailProcessor {
         document.getElementById('pauseBtn').addEventListener('click', () => this.pauseProcessing());
         document.getElementById('altitudeUnit').addEventListener('change', (e) => {
             this.altitudeUnit = e.target.value;
-            localStorage.setItem('altitudeUnit', this.altitudeUnit);
+            setStorageItem('altitudeUnit', this.altitudeUnit);
+            // Update displays that depend on unit preference
+            this.updateProcessCount();
         });
         document.getElementById('frameInterval').addEventListener('change', (e) => {
             this.frameInterval = parseInt(e.target.value);
-            localStorage.setItem('frameInterval', this.frameInterval.toString());
+            setStorageItem('frameInterval', this.frameInterval);
             // Update the process count display when interval changes
             this.updateProcessCount();
             // Update FPS display structure if session is loaded
@@ -269,7 +290,27 @@ class BikeTrailProcessor {
         
         document.getElementById('processingDelegate').addEventListener('change', (e) => {
             this.processingDelegate = e.target.value;
-            localStorage.setItem('processingDelegate', this.processingDelegate);
+            setStorageItem('processingDelegate', this.processingDelegate);
+        });
+        
+        document.getElementById('detailZoom').addEventListener('change', (e) => {
+            this.detailZoom = parseInt(e.target.value);
+            setStorageItem('detailZoom', this.detailZoom);
+            
+            // Immediately update popup with new zoom level if it exists and has loaded images
+            if (this.mapPopup && this.images && this.images.length > 0) {
+                const currentImage = this.images[this.currentIndex] || this.images[0];
+                if (currentImage && currentImage.lat && currentImage.lon) {
+                    this.mapPopup.postMessage({
+                        type: 'updateDetailPosition',
+                        lat: currentImage.lat,
+                        lon: currentImage.lon,
+                        bearing: this.lastValidBearing,
+                        rawCompass: currentImage.compass || null,
+                        zoomLevel: this.detailZoom
+                    }, '*');
+                }
+            }
         });
         
         // Cache management event listeners
@@ -302,6 +343,12 @@ class BikeTrailProcessor {
         this.initializeCropSelector();
     }
     
+    // Copy offscreen canvas to display canvas for final presentation
+    copyToDisplayCanvas() {
+        this.displayCtx.clearRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
+        this.displayCtx.drawImage(this.canvas, 0, 0);
+    }
+    
     initializeAltitudeUnit() {
         // Set the dropdown to the loaded/default value
         const altitudeUnitSelect = document.getElementById('altitudeUnit');
@@ -320,12 +367,29 @@ class BikeTrailProcessor {
         if (processingDelegateSelect) {
             processingDelegateSelect.value = this.processingDelegate;
         }
+        
+        // Set the detail zoom dropdown to the loaded/default value
+        const detailZoomSelect = document.getElementById('detailZoom');
+        if (detailZoomSelect) {
+            detailZoomSelect.value = this.detailZoom;
+        }
     }
     
-    updateProcessCount() {
+    updateProcessCount(processed = 0) {
         if (this.images && this.images.length > 0) {
             const totalToProcess = Math.ceil(this.images.length / this.frameInterval);
-            document.getElementById('processCount').textContent = totalToProcess;
+            const processedDuration = formatVideoDuration(processed);
+            const totalDuration = formatVideoDuration(totalToProcess);
+            
+            // Use the incrementally calculated processed distance
+            const processedDistanceFormatted = formatDistance(this.processedDistance, this.altitudeUnit);
+            const totalDistanceFormatted = formatDistance(this.totalDistance, this.altitudeUnit);
+            
+            // Calculate virtual speed for the output video (available immediately)
+            const virtualSpeed = calculateVirtualSpeed(this.totalDistance, totalToProcess, this.altitudeUnit);
+            
+            const displayText = `${processed}/${totalToProcess} (Duration: ${processedDuration}/${totalDuration}, Distance: ${processedDistanceFormatted}/${totalDistanceFormatted}, Speed: ${virtualSpeed})`;
+            setElementText('processCount', displayText);
         }
     }
 
@@ -356,8 +420,7 @@ class BikeTrailProcessor {
         }
         
         // Show loading spinner
-        loadBtn.innerHTML = '<span class="spinner"></span> Loading...';
-        loadBtn.disabled = true;
+        setButtonLoading('loadBtn', 'Loading...');
 
         try {
             const response = await fetch(`/api/session/${sessionName}`);
@@ -366,6 +429,9 @@ class BikeTrailProcessor {
             this.currentSession = sessionName;
             this.images = data.images;
             this.currentIndex = 0;
+            
+            // Calculate total distance from GPS points
+            this.totalDistance = calculateTotalDistance(this.images);
             
             // Reset iframe route flag for new session
             this.iframeRouteUpdated = false;
@@ -376,18 +442,17 @@ class BikeTrailProcessor {
             // Initialize popup maps after data is loaded
             await this.initializePopupMaps();
             
-            document.getElementById('imageCount').textContent = data.count;
+            setElementText('imageCount', data.count);
             this.updateProcessCount();
             
             // Pre-calculate and display FPS intervals structure
             this.initializeFPSDisplay();
             
-            document.getElementById('sessionInfo').style.display = 'block';
+            showElement('sessionInfo');
             
             
             // Reset button
-            loadBtn.innerHTML = 'Load Session';
-            loadBtn.disabled = false;
+            setButtonNormal('loadBtn', 'Load Session');
         } catch (error) {
             console.error('Failed to load session:', error);
             
@@ -398,8 +463,7 @@ class BikeTrailProcessor {
             this.cleanupPopup();
             
             // Reset button on error
-            loadBtn.innerHTML = 'Load Session';
-            loadBtn.disabled = false;
+            setButtonNormal('loadBtn', 'Load Session');
         }
     }
 
@@ -408,17 +472,12 @@ class BikeTrailProcessor {
         
         this.isProcessing = true;
         this.isPaused = false;
+        this.processedDistance = 0; // Reset processed distance for new processing run
         
-        document.getElementById('startBtn').style.display = 'none';
-        document.getElementById('pauseBtn').style.display = 'inline-block';
-        document.getElementById('progressContainer').style.display = 'block';
-        document.getElementById('fpsInfoContainer').style.display = 'block';
+        showProcessingUI();
         
         // Hide detection ready message after processing starts
-        const statusElement = document.getElementById('detection-status');
-        if (statusElement) {
-            statusElement.style.display = 'none';
-        }
+        hideElement('detection-status');
         
         // Configure worker with processing delegate preference
         if (this.workerRpc) {
@@ -440,8 +499,7 @@ class BikeTrailProcessor {
 
     pauseProcessing() {
         this.isPaused = !this.isPaused;
-        const pauseBtn = document.getElementById('pauseBtn');
-        pauseBtn.textContent = this.isPaused ? 'Resume' : 'Pause';
+        updatePauseButton(this.isPaused);
         
         // If pausing for a long time, clean up screen capture to save resources
         if (this.isPaused) {
@@ -482,6 +540,19 @@ class BikeTrailProcessor {
             
             processedFrames++;
             
+            // Add incremental distance if this isn't the first image
+            if (i > 0) {
+                const prevImage = this.images[i - 1];
+                const currentImage = this.images[i];
+                if (prevImage.lat && prevImage.lon && currentImage.lat && currentImage.lon) {
+                    const incrementalDistance = calculateDistance(
+                        prevImage.lat, prevImage.lon,
+                        currentImage.lat, currentImage.lon
+                    );
+                    this.processedDistance += incrementalDistance;
+                }
+            }
+            
             // Track frame processing time
             const frameProcessingTime = frameEndTime - frameStartTime;
             this.frameTimes.push(frameProcessingTime);
@@ -495,10 +566,11 @@ class BikeTrailProcessor {
                 const avgFrameTime = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
                 const remainingFrames = totalFramesToProcess - processedFrames;
                 const estimatedMs = remainingFrames * avgFrameTime;
-                timeEstimate = this.formatTimeEstimate(estimatedMs);
+                timeEstimate = formatTimeEstimate(estimatedMs);
             }
             
-            this.updateProgress(processedFrames, totalFramesToProcess, timeEstimate);
+            updateProgress(processedFrames, totalFramesToProcess, timeEstimate);
+            this.updateProcessCount(processedFrames);
         }
         
         if (this.currentIndex >= this.images.length) {
@@ -506,21 +578,6 @@ class BikeTrailProcessor {
         }
     }
     
-    formatTimeEstimate(milliseconds) {
-        const seconds = Math.floor(milliseconds / 1000);
-        const minutes = Math.floor(seconds / 60);
-        const hours = Math.floor(minutes / 60);
-        
-        if (hours > 0) {
-            const remainingMinutes = minutes % 60;
-            return `${hours}h ${remainingMinutes}m`;
-        } else if (minutes > 0) {
-            const remainingSeconds = seconds % 60;
-            return `${minutes}m ${remainingSeconds}s`;
-        } else {
-            return `${seconds}s`;
-        }
-    }
     
     trackFrameFPS(frameStartTime, frameEndTime, processedFrames, totalFramesToProcess) {
         // Calculate delta since last frame (for pause detection)
@@ -687,6 +744,9 @@ class BikeTrailProcessor {
             
             await this.addOverlays(imageData, index);
             
+            // Copy composed frame to display canvas for user viewing
+            this.copyToDisplayCanvas();
+            
             // Save all processed images
             const blob = await new Promise(resolve => {
                 this.canvas.toBlob(resolve, 'image/jpeg', 0.9);
@@ -744,8 +804,8 @@ class BikeTrailProcessor {
         if (!this.detailMapCanvas) return;
         
         // Update detailMapCanvas dimensions from crop selector values
-        const cropWidth = parseInt(localStorage.getItem('cropWidth') || '600');
-        const cropHeight = parseInt(localStorage.getItem('cropHeight') || '400');
+        const cropWidth = getStorageInt('cropWidth', 600);
+        const cropHeight = getStorageInt('cropHeight', 400);
         
         if (this.detailMapCanvas.width !== cropWidth || this.detailMapCanvas.height !== cropHeight) {
             this.detailMapCanvas.width = cropWidth;
@@ -753,7 +813,7 @@ class BikeTrailProcessor {
         }
         
         // Get paint zoom multiplier
-        const paintZoom = parseFloat(localStorage.getItem('detailPaintZoom') || '1.0');
+        const paintZoom = getStorageFloat('detailPaintZoom', 1.0);
         
         // Calculate zoomed dimensions
         const zoomedWidth = this.detailMapCanvas.width * paintZoom;
@@ -979,7 +1039,8 @@ class BikeTrailProcessor {
             lat: firstPoint.lat,
             lon: firstPoint.lon,
             bearing: bearing,
-            rawCompass: firstPoint.compass
+            rawCompass: firstPoint.compass,
+            zoomLevel: this.detailZoom
         }, '*');
     }
 
@@ -1010,7 +1071,7 @@ class BikeTrailProcessor {
                 const nextImage = this.images[targetIndex];
                 
                 if (nextImage && nextImage.lat && nextImage.lon) {
-                    bearing = this.calculateBearing(currentImage.lat, currentImage.lon, nextImage.lat, nextImage.lon);
+                    bearing = calculateBearing(currentImage.lat, currentImage.lon, nextImage.lat, nextImage.lon);
                 } else {
                     bearing = this.lastValidBearing || 90;
                 }
@@ -1028,7 +1089,8 @@ class BikeTrailProcessor {
             lat: currentImage.lat,
             lon: currentImage.lon,
             bearing: bearing,
-            rawCompass: currentIndex === 0 ? currentImage.compass || null : null
+            rawCompass: currentIndex === 0 ? currentImage.compass || null : null,
+            zoomLevel: this.detailZoom
         }, '*');
         
         // Also update route marker position
@@ -1041,18 +1103,6 @@ class BikeTrailProcessor {
         }, '*');
     }
     
-    // Calculate bearing between two GPS points (in degrees)
-    calculateBearing(lat1, lon1, lat2, lon2) {
-        const dLon = (lon2 - lon1) * Math.PI / 180;
-        const lat1Rad = lat1 * Math.PI / 180;
-        const lat2Rad = lat2 * Math.PI / 180;
-        
-        const y = Math.sin(dLon) * Math.cos(lat2Rad);
-        const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) - Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon);
-        
-        let bearing = Math.atan2(y, x) * 180 / Math.PI;
-        return (bearing + 360) % 360;
-    }
     
     // Wait for maps to be ready after an update
     waitForMapReady() {
@@ -1214,10 +1264,10 @@ class BikeTrailProcessor {
         
         try {
             // Get crop coordinates from localStorage
-            const cropX = parseInt(localStorage.getItem('cropX') || '200');
-            const cropY = parseInt(localStorage.getItem('cropY') || '100');
-            const cropWidth = parseInt(localStorage.getItem('cropWidth') || '600');
-            const cropHeight = parseInt(localStorage.getItem('cropHeight') || '400');
+            const cropX = getStorageInt('cropX', 200);
+            const cropY = getStorageInt('cropY', 100);
+            const cropWidth = getStorageInt('cropWidth', 600);
+            const cropHeight = getStorageInt('cropHeight', 400);
             
             // Update detailMapCanvas size to match crop dimensions
             this.detailMapCanvas.width = cropWidth;
@@ -1499,14 +1549,14 @@ class BikeTrailProcessor {
             const valueSpan = document.getElementById(id + 'Value');
             
             // Load from localStorage or use default
-            const savedValue = localStorage.getItem(id) || defaults[id];
+            const savedValue = getStorageItem(id, defaults[id]);
             slider.value = savedValue;
             valueSpan.textContent = savedValue;
             
             slider.addEventListener('input', () => {
                 valueSpan.textContent = slider.value;
                 // Save to localStorage on change
-                localStorage.setItem(id, slider.value);
+                setStorageItem(id, slider.value);
                 this.updateCropPreview();
             });
         });
@@ -1948,24 +1998,6 @@ CROP COORDINATES:
         console.log('Screen capture stopped and cleaned up');
     }
 
-    // Convert meters to feet
-    metersToFeet(meters) {
-        return Math.round(meters * 3.28084);
-    }
-    
-    // Get altitude value in the selected unit
-    getAltitudeInUnit(altitudeInMeters) {
-        if (this.altitudeUnit === 'ft') {
-            return this.metersToFeet(altitudeInMeters);
-        }
-        return Math.round(altitudeInMeters);
-    }
-    
-    // Get the unit label
-    getUnitLabel() {
-        return this.altitudeUnit === 'ft' ? ' ft' : ' m';
-    }
-    
     drawAltitudeChart(pos, width, height, currentIndex) {
         if (!this.images.length || this.altitudeRange.max === 0) return;
         
@@ -1979,7 +2011,7 @@ CROP COORDINATES:
         const currentAlt = this.images[currentIndex]?.alt || 0;
         
         // Convert altitude range to selected unit for display
-        const displayedAltRange = this.getAltitudeInUnit(this.altitudeRange.max) - this.getAltitudeInUnit(this.altitudeRange.min);
+        const displayedAltRange = getAltitudeInUnit(this.altitudeRange.max, this.altitudeUnit) - getAltitudeInUnit(this.altitudeRange.min, this.altitudeUnit);
         
         // Create 20 smoothed segments with averaged altitudes
         const segments = 20;
@@ -2079,7 +2111,7 @@ CROP COORDINATES:
         this.ctx.font = `${Math.floor(this.canvas.width / 80)}px Arial`; // Larger font for labels
         
         // Total elevation gain (top)
-        this.ctx.fillText(`${displayedAltRange}${this.getUnitLabel()}`, pos.x + 15, pos.y + 40);
+        this.ctx.fillText(`${displayedAltRange}${getUnitLabel(this.altitudeUnit)}`, pos.x + 15, pos.y + 40);
         
         // Base level (bottom)  
         this.ctx.fillText(`0`, pos.x + 15, pos.y + height - 20);
@@ -2408,35 +2440,25 @@ CROP COORDINATES:
     }
 
     displayDetectedCrops(img, detectionResult) {
-        // Create or get the detections container
-        let container = document.getElementById('detections-container');
+        // Get the detections container from sidebar
+        const container = document.getElementById('detections-container');
         if (!container) {
-            container = document.createElement('div');
-            container.id = 'detections-container';
-            container.style.cssText = `
-                position: fixed;
-                top: 10px;
-                right: 10px;
-                max-width: 300px;
-                max-height: 80vh;
-                overflow-y: auto;
-                background: rgba(0, 0, 0, 0.8);
-                border-radius: 8px;
-                padding: 10px;
-                z-index: 1000;
-                display: flex;
-                flex-direction: column;
-                gap: 10px;
-            `;
-            document.body.appendChild(container);
+            console.error('Detections container not found in sidebar');
+            return;
+        }
+
+        // Remove "no detections" message if it exists
+        const noDetectionsMsg = container.querySelector('.no-detections');
+        if (noDetectionsMsg) {
+            noDetectionsMsg.remove();
         }
 
         // Process face detections
         detectionResult.faces.forEach((face, index) => {
             if (face.boundingBox) {
-                const croppedImage = this.cropDetection(img, face.boundingBox, `face-${index}`, 'red', face.confidence);
-                if (croppedImage) {
-                    container.appendChild(croppedImage);
+                const detectionItem = this.createDetectionItem(img, face.boundingBox, `face-${index}`, 'face', face.confidence);
+                if (detectionItem) {
+                    container.appendChild(detectionItem);
                 }
             }
         });
@@ -2444,20 +2466,23 @@ CROP COORDINATES:
         // Process people detections
         detectionResult.people.forEach((person, index) => {
             if (person.boundingBox) {
-                const croppedImage = this.cropDetection(img, person.boundingBox, `person-${index}`, 'green', person.confidence);
-                if (croppedImage) {
-                    container.appendChild(croppedImage);
+                const detectionItem = this.createDetectionItem(img, person.boundingBox, `person-${index}`, 'person', person.confidence);
+                if (detectionItem) {
+                    container.appendChild(detectionItem);
                 }
             }
         });
 
-        // Limit container to last 10 detections to prevent overflow
-        while (container.children.length > 10) {
+        // Limit container to last 30 detections to prevent overflow
+        while (container.children.length > 30) {
             container.removeChild(container.firstChild);
         }
+
+        // Auto-scroll to bottom to show latest detections
+        container.scrollTop = container.scrollHeight;
     }
 
-    cropDetection(img, boundingBox, label, borderColor = 'green', confidence = 1.0) {
+    createDetectionItem(img, boundingBox, label, type, confidence = 1.0) {
         try {
             // Add padding around the bounding box
             const padding = 20;
@@ -2480,41 +2505,28 @@ CROP COORDINATES:
                 x, y, width, height,  // Source rectangle
                 0, 0, width, height   // Destination rectangle
             );
-            
-            // Draw confidence percentage overlay (50% of image width)
-            const confidenceText = `${(confidence * 100).toFixed(0)}%`;
-            const fontSize = Math.max(width * 0.5, 20); // 50% of image width, minimum 20px
-            cropCtx.font = `bold ${fontSize}px Arial`;
-            
-            // Center the text
-            const textMetrics = cropCtx.measureText(confidenceText);
-            const textX = (width - textMetrics.width) / 2;
-            const textY = (height + fontSize) / 2;
-            
-            // Draw white text with black outline
-            cropCtx.strokeStyle = 'black';
-            cropCtx.lineWidth = 3;
-            cropCtx.strokeText(confidenceText, textX, textY);
-            
-            cropCtx.fillStyle = 'white';
-            cropCtx.fillText(confidenceText, textX, textY);
 
-            // Create img element to display
+            // Convert canvas to image
             const croppedImg = document.createElement('img');
             croppedImg.src = cropCanvas.toDataURL();
-            croppedImg.style.cssText = `
-                max-width: 150px;
-                max-height: 100px;
-                border: 2px solid ${borderColor};
-                border-radius: 4px;
-                display: block;
-            `;
-            croppedImg.title = `${label} - ${boundingBox.width.toFixed(0)}x${boundingBox.height.toFixed(0)}`;
 
-            return croppedImg;
+            // Create the detection item container
+            const detectionItem = document.createElement('div');
+            detectionItem.className = `detection-item ${type}`;
+            
+            // Add the image
+            detectionItem.appendChild(croppedImg);
+            
+            // Add info overlay
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'detection-info';
+            infoDiv.textContent = `${label} (${(confidence * 100).toFixed(1)}%) - ${boundingBox.width.toFixed(0)}×${boundingBox.height.toFixed(0)}`;
+            detectionItem.appendChild(infoDiv);
+
+            return detectionItem;
 
         } catch (error) {
-            console.error('Error cropping detection:', error);
+            console.error('Error creating detection item:', error);
             return null;
         }
     }
@@ -2537,23 +2549,16 @@ CROP COORDINATES:
         }
     }
 
-    updateProgress(current, total, timeEstimate = null) {
-        const percentage = (current / total) * 100;
-        document.getElementById('progressFill').style.width = `${percentage}%`;
-        
-        let progressText = `${current} / ${total}`;
-        if (timeEstimate) {
-            progressText += ` - Est. time remaining: ${timeEstimate}`;
-        }
-        document.getElementById('progressText').textContent = progressText;
-    }
 
     finishProcessing() {
         this.isProcessing = false;
-        document.getElementById('startBtn').style.display = 'inline-block';
-        document.getElementById('pauseBtn').style.display = 'none';
-        document.getElementById('startBtn').textContent = 'Processing Complete';
-        document.getElementById('startBtn').disabled = true;
+        
+        // Show start button and hide pause button
+        showElement('startBtn');
+        hideElement('pauseBtn');
+        
+        // Update start button to show completion
+        setButtonLoading('startBtn', 'Processing Complete');
         
         // Keep FPS info visible after completion for review
         // document.getElementById('fpsInfoContainer').style.display = 'none';
@@ -2681,6 +2686,4 @@ CROP COORDINATES:
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    new BikeTrailProcessor();
-});
+export default BikeTrailProcessor;
