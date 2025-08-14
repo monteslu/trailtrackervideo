@@ -249,7 +249,7 @@
         // Listen for messages from parent window
         window.addEventListener('message', function(event) {
             console.log('🔄 Popup received message:', event.data);
-            const { type, routeCoords, lat, lon, bearing, rawCompass } = event.data;
+            const { type, routeCoords, lat, lon, bearing, rawCompass, zoomLevel } = event.data;
             
             // Debug what we're receiving
             if (bearing !== undefined) {
@@ -280,7 +280,8 @@
                     break;
                     
                 case 'updateDetailPosition':
-                    console.log('Updating detail position to:', lat, lon);
+                    const currentZoom = zoomLevel || 17; // Use received zoom or default to 17
+                    console.log('Updating detail position to:', lat, lon, 'zoom:', currentZoom);
                     
                     // Reset ready flags at the start of update sequence
                     if (!updateSequenceStarted) {
@@ -289,7 +290,7 @@
                         console.log('🔄 Started map update sequence');
                     }
                     
-                    window.detailMap.setView([lat, lon], 17);
+                    window.detailMap.setView([lat, lon], currentZoom);
                     if (window.detailMarker) window.detailMap.removeLayer(window.detailMarker);
                     
                     
