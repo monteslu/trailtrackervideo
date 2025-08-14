@@ -3,6 +3,9 @@ tile-cache/
 osm-data/
 sessions/
 output/
+videos/
+music/
+musicout/
 .DS_Store
 *.log
 npm-debug.log*

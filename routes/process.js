@@ -6,11 +6,8 @@ const { extractMetadata, getTimestampFromFilename } = require('../utils/xmp');
 const https = require('https');
 const http = require('http');
 const TileCache = require('../utils/tile-cache');
-const TileGenerator = require('../utils/tile-generator');
-
 const router = express.Router();
 const tileCache = new TileCache();
-const tileGenerator = new TileGenerator();
 
 // Rate limiting for OSM requests
 const tileRequestQueue = [];
@@ -36,8 +33,9 @@ async function fetchTileFromOSM({ z, x, y, tileUrl, cacheDir, cachePath }) {
   return new Promise((resolve, reject) => {
     console.log(`Fetching tile: ${tileUrl} (after rate limiting)`);
     
-    // More compliant headers
+    // More compliant headers with timeout
     const request = https.get(tileUrl, {
+      timeout: 15000, // 15 second timeout
       headers: {
         'User-Agent': 'BikeTrailImageProcessor/1.0.0 Contact: biketrails@localhost (Educational/Personal Project)',
         'Accept': 'image/png,image/*,*/*;q=0.8',
@@ -48,8 +46,7 @@ async function fetchTileFromOSM({ z, x, y, tileUrl, cacheDir, cachePath }) {
         'DNT': '1',
         'Pragma': 'no-cache',
         'Referer': 'https://localhost:3000/'
-      },
-      timeout: 15000
+      }
     }, (osmResponse) => {
       console.log(`OSM Response: ${osmResponse.statusCode} for ${z}/${x}/${y}`);
       
@@ -66,8 +63,17 @@ async function fetchTileFromOSM({ z, x, y, tileUrl, cacheDir, cachePath }) {
       
       if (osmResponse.statusCode === 200) {
         const chunks = [];
+        let totalSize = 0;
+        const MAX_TILE_SIZE = 2 * 1024 * 1024; // 2MB max per tile
         
         osmResponse.on('data', (chunk) => {
+          totalSize += chunk.length;
+          if (totalSize > MAX_TILE_SIZE) {
+            console.error(`Tile too large: ${totalSize} bytes, aborting`);
+            request.destroy();
+            reject(new Error('Tile response too large'));
+            return;
+          }
           chunks.push(chunk);
         });
         
@@ -104,11 +110,12 @@ async function fetchTileFromOSM({ z, x, y, tileUrl, cacheDir, cachePath }) {
     
     request.on('error', (error) => {
       console.error('Tile request error:', error);
+      request.destroy(); // Ensure cleanup
       reject(error);
     });
     
     request.on('timeout', () => {
-      console.warn(`Timeout fetching tile ${z}/${x}/${y}`);
+      console.error(`Tile request timeout: ${tileUrl}`);
       request.destroy();
       reject(new Error('Request timeout'));
     });
@@ -133,13 +140,24 @@ router.get('/session/:name', async (req, res) => {
   try {
     const sessionName = req.params.name;
     const sessionPath = path.join(config.ROOT_DIR, sessionName);
+    const cacheFile = path.join(sessionPath, 'xmp.json');
+    
+    // Check if cache file exists
+    try {
+      const cacheData = await fs.readFile(cacheFile, 'utf-8');
+      const cached = JSON.parse(cacheData);
+      console.log(`Using cached XMP data for session ${sessionName} (${cached.images.length} images)`);
+      return res.json(cached);
+    } catch (cacheError) {
+      console.log(`No cache found for session ${sessionName}, processing XMP data...`);
+    }
     
     const files = await fs.readdir(sessionPath);
     const imageFiles = files.filter(file => 
       file.toLowerCase().endsWith('.jpg') || file.toLowerCase().endsWith('.jpeg')
     );
 
-    console.log(`Found ${imageFiles.length} image files in session ${sessionName}`);
+    console.log(`Processing XMP data for ${imageFiles.length} image files in session ${sessionName}`);
 
     const images = [];
     let processedCount = 0;
@@ -169,12 +187,21 @@ router.get('/session/:name', async (req, res) => {
 
     images.sort((a, b) => a.timestamp - b.timestamp);
 
-    console.log(`Returning ${images.length} images with metadata`);
-
-    res.json({
+    const result = {
       count: images.length,
       images
-    });
+    };
+
+    // Save cache file
+    try {
+      await fs.writeFile(cacheFile, JSON.stringify(result, null, 2));
+      console.log(`Cached XMP data for session ${sessionName}`);
+    } catch (writeError) {
+      console.warn('Failed to write XMP cache:', writeError);
+    }
+
+    console.log(`Returning ${images.length} images with metadata`);
+    res.json(result);
   } catch (error) {
     console.error('Error processing session:', error);
     res.status(500).json({ error: 'Failed to process session' });
@@ -191,7 +218,20 @@ router.post('/upload/:session/:timestamp', async (req, res) => {
     const outputPath = path.join(outputDir, `${timestamp}.jpg`);
     
     const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
+    let totalSize = 0;
+    const MAX_UPLOAD_SIZE = 10 * 1024 * 1024; // 10MB max upload
+    
+    req.on('data', chunk => {
+      totalSize += chunk.length;
+      if (totalSize > MAX_UPLOAD_SIZE) {
+        console.error(`Upload too large: ${totalSize} bytes, aborting`);
+        req.destroy();
+        res.status(413).json({ error: 'Upload too large' });
+        return;
+      }
+      chunks.push(chunk);
+    });
+    
     req.on('end', async () => {
       try {
         const buffer = Buffer.concat(chunks);
@@ -248,24 +288,24 @@ router.get('/tiles/:z/:x/:y.png', async (req, res) => {
       console.log(`Local tile cache MISS: ${z}/${x}/${y} - generating...`);
     }
     
-    // Try local Docker tile server first
+    // Try CyclOSM (bike-focused) as primary source
     try {
-      const tileBuffer = await fetchFromLocalTileServer(zNum, xNum, yNum);
+      const tileBuffer = await fetchFromCyclOSM(zNum, xNum, yNum);
       
       if (tileBuffer) {
         // Cache the tile
         await fs.mkdir(cacheDir, { recursive: true });
         await fs.writeFile(cachePath, tileBuffer);
-        console.log(`Fetched and cached tile from local Docker server: ${z}/${x}/${y}`);
+        console.log(`Fetched and cached tile from CyclOSM: ${z}/${x}/${y}`);
         
         res.send(tileBuffer);
         return;
       }
     } catch (error) {
-      console.log(`Local Docker server failed for ${z}/${x}/${y}, trying alternatives`);
+      console.log(`CyclOSM failed for ${z}/${x}/${y}, trying alternatives`);
     }
 
-    // Fallback to alternative tile sources
+    // Fallback to other alternative tile sources
     try {
       const tileBuffer = await fetchFromAlternativeSource(zNum, xNum, yNum);
       
@@ -282,27 +322,57 @@ router.get('/tiles/:z/:x/:y.png', async (req, res) => {
       console.log(`Alternative sources failed for ${z}/${x}/${y}, generating locally`);
     }
 
-    // Fallback to local generation
-    try {
-      const routeData = null;
-      const tileBuffer = await tileGenerator.generateTile(xNum, yNum, zNum, routeData);
-      
-      await fs.mkdir(cacheDir, { recursive: true });
-      await fs.writeFile(cachePath, tileBuffer);
-      console.log(`Generated and cached tile: ${z}/${x}/${y}`);
-      
-      res.send(tileBuffer);
-      
-    } catch (error) {
-      console.error(`All tile sources failed for ${z}/${x}/${y}:`, error.message);
-      res.status(500).send('Tile generation failed');
-    }
+    // All external tile sources failed - return error
+    console.error(`All external tile sources failed for ${z}/${x}/${y}`);
+    res.status(503).send('All tile sources unavailable');
     
   } catch (error) {
     console.error('Tile route error:', error);
     res.status(500).send('Tile route error');
   }
 });
+
+// Fetch from CyclOSM (bike-focused tiles)
+async function fetchFromCyclOSM(z, x, y) {
+  const subdomains = ['a', 'b', 'c'];
+  const subdomain = subdomains[Math.floor(Math.random() * subdomains.length)];
+  const url = `https://${subdomain}.tile-cyclosm.openstreetmap.fr/cyclosm/${z}/${x}/${y}.png`;
+  
+  try {
+    const response = await new Promise((resolve, reject) => {
+      const request = https.get(url, {
+        headers: {
+          'User-Agent': 'BikeTrailProcessor/1.0 (Educational use)',
+          'Accept': 'image/png,image/*,*/*'
+        },
+        timeout: 8000
+      }, resolve);
+      
+      request.on('error', reject);
+      request.on('timeout', () => {
+        request.destroy();
+        reject(new Error('Request timeout'));
+      });
+    });
+
+    if (response.statusCode === 200) {
+      const chunks = [];
+      
+      response.on('data', chunk => chunks.push(chunk));
+      
+      return new Promise((resolve) => {
+        response.on('end', () => {
+          resolve(Buffer.concat(chunks));
+        });
+      });
+    }
+    
+    return null;
+  } catch (error) {
+    console.log(`CyclOSM error: ${error.message}`);
+    return null;
+  }
+}
 
 // Fetch from local Docker tile server
 async function fetchFromLocalTileServer(z, x, y) {
@@ -345,8 +415,6 @@ async function fetchFromAlternativeSource(z, x, y) {
   const sources = [
     // OpenTopoMap (colorful, hiking focused)
     `https://tile.opentopomap.org/${z}/${x}/${y}.png`,
-    // CyclOSM (bike-focused, colorful)
-    `https://dev.{s}.tile.cyclosm.org/${z}/${x}/${y}.png`.replace('{s}', ['a','b','c'][Math.floor(Math.random()*3)]),
     // WikiMedia tiles (full color OSM)
     `https://maps.wikimedia.org/osm-intl/${z}/${x}/${y}.png`,
     // CartoDB Positron as fallback
