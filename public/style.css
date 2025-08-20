@@ -248,6 +248,12 @@ button:disabled {
     border-color: #dc3545;
 }
 
+.detection-item.shadow {
+    border-color: #dc3545;
+    background: #ffe6e6;
+    opacity: 0.8;
+}
+
 .detection-item img {
     width: 100%;
     height: 150px;

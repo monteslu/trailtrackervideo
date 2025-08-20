@@ -141,6 +141,8 @@ router.get('/session/:name', async (req, res) => {
     const sessionName = req.params.name;
     const sessionPath = path.join(config.ROOT_DIR, sessionName);
     const cacheFile = path.join(sessionPath, 'xmp.json');
+    const trailsyncFile = path.join(sessionPath, 'trailsync.json');
+    const goproGpsFile = path.join(sessionPath, 'goprogps.json');
     
     // Check if cache file exists
     try {
@@ -149,7 +151,336 @@ router.get('/session/:name', async (req, res) => {
       console.log(`Using cached XMP data for session ${sessionName} (${cached.images.length} images)`);
       return res.json(cached);
     } catch (cacheError) {
-      console.log(`No cache found for session ${sessionName}, processing XMP data...`);
+      console.log(`No XMP cache found for session ${sessionName}`);
+    }
+    
+    // PRIORITY: Check if goprogps.json exists and generate xmp.json from it FIRST
+    try {
+      const goproGpsData = await fs.readFile(goproGpsFile, 'utf-8');
+      const goproGps = JSON.parse(goproGpsData);
+      
+      if (goproGps.videos && goproGps.videos.length > 0) {
+        const firstVideo = goproGps.videos[0];
+        const gpsCoordinates = firstVideo.gps_data?.gps_data?.coordinates;
+        
+        if (gpsCoordinates && gpsCoordinates.length > 0) {
+          console.log(`Found goprogps.json with ${gpsCoordinates.length} GPS coordinates from ${firstVideo.filename}`);
+          
+          // Load trailsync.json for weather/location data if available
+          let trailsyncMetadata = null;
+          try {
+            const trailsyncData = await fs.readFile(trailsyncFile, 'utf-8');
+            const trailsync = JSON.parse(trailsyncData);
+            trailsyncMetadata = trailsync.metadata || [];
+            console.log(`Found trailsync.json with ${trailsyncMetadata.length} entries for weather/location enhancement`);
+          } catch (trailsyncError) {
+            console.log(`No trailsync.json found, using GoPro GPS data only`);
+          }
+          
+          const files = await fs.readdir(sessionPath);
+          const imageFiles = files.filter(file => 
+            file.toLowerCase().endsWith('.jpg') || file.toLowerCase().endsWith('.jpeg')
+          );
+          
+          console.log(`Creating xmp.json for ${imageFiles.length} images using GoPro GPS coordinates`);
+          
+          const images = [];
+          
+          for (const file of imageFiles) {
+            const timestamp = getTimestampFromFilename(file) || Date.now();
+            
+            // Find closest GPS coordinate from goprogps.json
+            let closestGps = null;
+            let minGpsDiff = Infinity;
+            
+            for (const gpsEntry of gpsCoordinates) {
+              if (!gpsEntry.timestamp) continue;
+              
+              const diff = Math.abs(timestamp - gpsEntry.timestamp);
+              if (diff < minGpsDiff) {
+                minGpsDiff = diff;
+                closestGps = gpsEntry;
+              }
+            }
+            
+            // Find closest weather/location data from trailsync.json if available
+            let weather = null;
+            let location = null;
+            
+            if (trailsyncMetadata && trailsyncMetadata.length > 0) {
+              let closestTrailsync = null;
+              let minTrailsyncDiff = Infinity;
+              
+              for (const entry of trailsyncMetadata) {
+                if (!entry.timestamp) continue;
+                
+                const diff = Math.abs(timestamp - entry.timestamp);
+                if (diff < minTrailsyncDiff) {
+                  minTrailsyncDiff = diff;
+                  closestTrailsync = entry;
+                }
+              }
+              
+              if (closestTrailsync) {
+                weather = closestTrailsync.weather || null;
+                location = closestTrailsync.location || null;
+              }
+            }
+            
+            // Create image entry with GoPro GPS + trailsync weather/location
+            const imageEntry = {
+              timestamp,
+              filename: file,
+              lat: closestGps?.lat || null,
+              lon: closestGps?.lon || null,
+              alt: closestGps?.alt || null,
+              speed: closestGps?.speed || null,
+              compass: null, // GoPro GPS doesn't include compass data
+              goproGpsTimestamp: closestGps?.timestamp || null,
+              goproVideoOffset: closestGps?.videoTimeOffset || null
+            };
+            
+            // Add weather data if available
+            if (weather) {
+              imageEntry.weather = weather;
+            }
+            
+            // Add location data if available
+            if (location) {
+              imageEntry.location = location;
+            }
+            
+            images.push(imageEntry);
+          }
+          
+          images.sort((a, b) => a.timestamp - b.timestamp);
+          
+          const result = {
+            count: images.length,
+            images,
+            gpsSource: 'gopro',
+            goproVideo: firstVideo.filename,
+            gpsCoordinates: gpsCoordinates.length,
+            weatherSource: trailsyncMetadata ? 'trailsync' : null,
+            locationSource: trailsyncMetadata ? 'trailsync' : null
+          };
+          
+          // Save the generated xmp.json
+          try {
+            await fs.writeFile(cacheFile, JSON.stringify(result, null, 2));
+            console.log(`Generated xmp.json from GoPro GPS for session ${sessionName} (${images.length} images)`);
+          } catch (writeError) {
+            console.warn('Failed to write generated XMP cache:', writeError);
+          }
+          
+          return res.json(result);
+        }
+      }
+      
+      console.log(`GoPro GPS data not usable, falling back to trailsync processing`);
+      
+    } catch (goproGpsError) {
+      console.log(`No goprogps.json found for session ${sessionName}, trying trailsync.json...`);
+    }
+    
+    // FALLBACK: Check if trailsync.json exists and generate xmp.json from it
+    try {
+      const trailsyncData = await fs.readFile(trailsyncFile, 'utf-8');
+      const trailsync = JSON.parse(trailsyncData);
+      console.log(`Found trailsync.json with ${trailsync.metadata?.length || 0} entries, generating xmp.json...`);
+      const files = await fs.readdir(sessionPath);
+      const imageFiles = files.filter(file => 
+        file.toLowerCase().endsWith('.jpg') || file.toLowerCase().endsWith('.jpeg')
+      );
+      
+      console.log(`Processing ${imageFiles.length} JPEG files with ${trailsync.metadata?.length || 0} trailsync entries`);
+      
+      const images = [];
+      
+      for (const file of imageFiles) {
+        const timestamp = getTimestampFromFilename(file) || Date.now();
+        
+        // Find closest timestamp entry from trailsync.metadata array
+        let closestEntry = null;
+        let minDiff = Infinity;
+        let closestTimestamp = null;
+        
+        if (trailsync.metadata && Array.isArray(trailsync.metadata)) {
+          for (const entry of trailsync.metadata) {
+            if (!entry.timestamp) continue;
+            
+            const diff = Math.abs(timestamp - entry.timestamp);
+            if (diff < minDiff) {
+              minDiff = diff;
+              closestEntry = entry;
+              closestTimestamp = entry.timestamp;
+            }
+          }
+        }
+        
+        // Create image entry with data from closest trailsync entry
+        const imageEntry = {
+          timestamp,
+          filename: file,
+          lat: closestEntry?.gps?.latitude || null,
+          lon: closestEntry?.gps?.longitude || null,
+          alt: closestEntry?.gps?.altitude || null,
+          speed: closestEntry?.gps?.speed || null,
+          compass: closestEntry?.gps?.direction || null,
+          tsynctimestamp: closestTimestamp
+        };
+        
+        images.push(imageEntry);
+      }
+      
+      images.sort((a, b) => a.timestamp - b.timestamp);
+      
+      const result = {
+        count: images.length,
+        images
+      };
+      
+      // Save the generated xmp.json
+      try {
+        await fs.writeFile(cacheFile, JSON.stringify(result, null, 2));
+        console.log(`Generated xmp.json from trailsync.json for session ${sessionName} (${images.length} images)`);
+      } catch (writeError) {
+        console.warn('Failed to write generated XMP cache:', writeError);
+      }
+      
+      return res.json(result);
+      
+    } catch (trailsyncError) {
+      console.log(`No trailsync.json found for session ${sessionName}`);
+    }
+    
+    // Check if goprogps.json exists and generate xmp.json from it
+    try {
+      const goproGpsData = await fs.readFile(goproGpsFile, 'utf-8');
+      const goproGps = JSON.parse(goproGpsData);
+      
+      if (goproGps.videos && goproGps.videos.length > 0) {
+        const firstVideo = goproGps.videos[0];
+        const gpsCoordinates = firstVideo.gps_data?.gps_data?.coordinates;
+        
+        if (gpsCoordinates && gpsCoordinates.length > 0) {
+          console.log(`Found goprogps.json with ${gpsCoordinates.length} GPS coordinates from ${firstVideo.filename}`);
+          
+          // Load trailsync.json for weather/location data if available
+          let trailsyncMetadata = null;
+          try {
+            const trailsyncData = await fs.readFile(trailsyncFile, 'utf-8');
+            const trailsync = JSON.parse(trailsyncData);
+            trailsyncMetadata = trailsync.metadata || [];
+            console.log(`Found trailsync.json with ${trailsyncMetadata.length} entries for weather/location enhancement`);
+          } catch (trailsyncError) {
+            console.log(`No trailsync.json found, using GoPro GPS data only`);
+          }
+          
+          const files = await fs.readdir(sessionPath);
+          const imageFiles = files.filter(file => 
+            file.toLowerCase().endsWith('.jpg') || file.toLowerCase().endsWith('.jpeg')
+          );
+          
+          console.log(`Creating xmp.json for ${imageFiles.length} images using GoPro GPS coordinates`);
+          
+          const images = [];
+          
+          for (const file of imageFiles) {
+            const timestamp = getTimestampFromFilename(file) || Date.now();
+            
+            // Find closest GPS coordinate from goprogps.json
+            let closestGps = null;
+            let minGpsDiff = Infinity;
+            
+            for (const gpsEntry of gpsCoordinates) {
+              if (!gpsEntry.timestamp) continue;
+              
+              const diff = Math.abs(timestamp - gpsEntry.timestamp);
+              if (diff < minGpsDiff) {
+                minGpsDiff = diff;
+                closestGps = gpsEntry;
+              }
+            }
+            
+            // Find closest weather/location data from trailsync.json if available
+            let weather = null;
+            let location = null;
+            
+            if (trailsyncMetadata && trailsyncMetadata.length > 0) {
+              let closestTrailsync = null;
+              let minTrailsyncDiff = Infinity;
+              
+              for (const entry of trailsyncMetadata) {
+                if (!entry.timestamp) continue;
+                
+                const diff = Math.abs(timestamp - entry.timestamp);
+                if (diff < minTrailsyncDiff) {
+                  minTrailsyncDiff = diff;
+                  closestTrailsync = entry;
+                }
+              }
+              
+              if (closestTrailsync) {
+                weather = closestTrailsync.weather || null;
+                location = closestTrailsync.location || null;
+              }
+            }
+            
+            // Create image entry with GoPro GPS + trailsync weather/location
+            const imageEntry = {
+              timestamp,
+              filename: file,
+              lat: closestGps?.lat || null,
+              lon: closestGps?.lon || null,
+              alt: closestGps?.alt || null,
+              speed: closestGps?.speed || null,
+              compass: null, // GoPro GPS doesn't include compass data
+              goproGpsTimestamp: closestGps?.timestamp || null,
+              goproVideoOffset: closestGps?.videoTimeOffset || null
+            };
+            
+            // Add weather data if available
+            if (weather) {
+              imageEntry.weather = weather;
+            }
+            
+            // Add location data if available
+            if (location) {
+              imageEntry.location = location;
+            }
+            
+            images.push(imageEntry);
+          }
+          
+          images.sort((a, b) => a.timestamp - b.timestamp);
+          
+          const result = {
+            count: images.length,
+            images,
+            gpsSource: 'gopro',
+            goproVideo: firstVideo.filename,
+            gpsCoordinates: gpsCoordinates.length,
+            weatherSource: trailsyncMetadata ? 'trailsync' : null,
+            locationSource: trailsyncMetadata ? 'trailsync' : null
+          };
+          
+          // Save the generated xmp.json
+          try {
+            await fs.writeFile(cacheFile, JSON.stringify(result, null, 2));
+            console.log(`Generated xmp.json from GoPro GPS for session ${sessionName} (${images.length} images)`);
+          } catch (writeError) {
+            console.warn('Failed to write generated XMP cache:', writeError);
+          }
+          
+          return res.json(result);
+        }
+      }
+      
+      console.log(`GoPro GPS data not usable, falling back to XMP extraction`);
+      
+    } catch (goproGpsError) {
+      console.log(`No goprogps.json found for session ${sessionName}, processing XMP data from image files...`);
     }
     
     const files = await fs.readdir(sessionPath);
@@ -514,6 +845,42 @@ router.post('/cache/preload', async (req, res) => {
   } catch (error) {
     console.error('Preload error:', error);
     res.status(500).json({ error: 'Failed to start preload' });
+  }
+});
+
+// Save detections.json for a session
+router.post('/sessions/:sessionName/detections', async (req, res) => {
+  try {
+    const sessionName = req.params.sessionName;
+    const detectionsData = req.body;
+    
+    // Validate session name
+    if (!sessionName || sessionName.includes('..') || sessionName.includes('/')) {
+      return res.status(400).json({ error: 'Invalid session name' });
+    }
+    
+    // Validate detections data
+    if (!detectionsData || typeof detectionsData !== 'object') {
+      return res.status(400).json({ error: 'Invalid detections data' });
+    }
+    
+    const sessionDir = path.join('sessions', sessionName);
+    const detectionsPath = path.join(sessionDir, 'detections.json');
+    
+    // Check if session directory exists
+    try {
+      await fs.access(sessionDir);
+    } catch (error) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    // Write detections.json file
+    await fs.writeFile(detectionsPath, JSON.stringify(detectionsData, null, 2));
+    
+    res.json({ message: 'Detections saved successfully' });
+  } catch (error) {
+    console.error('Save detections error:', error);
+    res.status(500).json({ error: 'Failed to save detections' });
   }
 });
 

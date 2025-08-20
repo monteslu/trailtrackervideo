@@ -10,7 +10,12 @@
 </head>
 <body>
     <div class="container">
-        <h1>🚴‍♂️ Bike Trail Image Processor</h1>
+        <nav style="margin-bottom: 20px;">
+            <span style="margin-right: 20px; font-weight: bold; color: #333;">🚴‍♂️ Bike Trail</span>
+            <span style="margin-right: 15px; color: #fff; background-color: #007bff; padding: 5px 10px; border-radius: 4px;">Processor</span>
+            <a href="overview.html" style="margin-right: 15px; text-decoration: none; color: #007bff;">Overview</a>
+            <a href="detections.html" style="text-decoration: none; color: #007bff;">Detections</a>
+        </nav>
         
         <div class="controls">
             <div class="control-group">
@@ -55,6 +60,11 @@
                             <option value="cpu" selected>CPU</option>
                             <option value="gpu">GPU</option>
                         </select>
+                    </div>
+                    <div class="unit-selector">
+                        <label for="skipDetection">
+                            <input type="checkbox" id="skipDetection" checked> Skip People Detection
+                        </label>
                     </div>
                     <div class="unit-selector">
                         <label for="detailZoom">Detail Zoom:</label>

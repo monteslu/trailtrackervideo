@@ -6,6 +6,9 @@ output/
 videos/
 music/
 musicout/
+songs/
+songsout/
+gopro/
 .DS_Store
 *.log
 npm-debug.log*

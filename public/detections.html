@@ -1,0 +1,1636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detection Editor - Bike Trail</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .detection-container {
+            display: flex;
+            gap: 20px;
+            height: calc(100vh - 150px);
+        }
+        
+        .frame-viewer {
+            flex: 1;
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .frame-viewer canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        
+        .detection-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        .detection-box {
+            position: absolute;
+            border: 2px solid;
+            pointer-events: auto;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .detection-box:hover {
+            opacity: 0.8;
+            transform: scale(1.02);
+        }
+        
+        .detection-box.person {
+            border-color: #ff0000;
+            background: rgba(255, 0, 0, 0.1);
+        }
+        
+        .detection-box.traffic-light {
+            border-color: #00ff00;
+            background: rgba(0, 255, 0, 0.1);
+        }
+        
+        .detection-box.stop-sign {
+            border-color: #ff9900;
+            background: rgba(255, 153, 0, 0.1);
+        }
+        
+        .detection-box.car,
+        .detection-box.truck,
+        .detection-box.bus,
+        .detection-box.motorcycle,
+        .detection-box.bicycle {
+            border-color: #0099ff;
+            background: rgba(0, 153, 255, 0.1);
+        }
+        
+        .detection-box.selected {
+            border-width: 3px;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+        }
+        
+        .detection-sidebar {
+            width: 400px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            padding: 15px;
+            overflow-y: auto;
+        }
+        
+        .detection-form {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 15px;
+            transition: all 0.2s;
+        }
+        
+        .detection-form.selected {
+            border-color: #007bff;
+            border-width: 2px;
+            box-shadow: 0 2px 8px rgba(0, 123, 255, 0.2);
+        }
+        
+        .detection-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .detection-title {
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .detection-confidence {
+            font-size: 12px;
+            color: #666;
+            background: #f8f9fa;
+            padding: 2px 8px;
+            border-radius: 12px;
+        }
+        
+        .form-group {
+            margin-bottom: 12px;
+        }
+        
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            margin-bottom: 4px;
+            color: #555;
+        }
+        
+        .slider-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .slider-group input[type="range"] {
+            flex: 1;
+            height: 6px;
+            background: #ddd;
+            border-radius: 3px;
+            outline: none;
+        }
+        
+        .slider-group input[type="range"]:focus {
+            outline: 2px solid #007bff;
+            outline-offset: 2px;
+        }
+        
+        .slider-value {
+            font-size: 11px;
+            color: #666;
+            min-width: 35px;
+            text-align: right;
+        }
+        
+        .radio-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        
+        .radio-option {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+        }
+        
+        .radio-option input[type="radio"] {
+            margin: 0;
+        }
+        
+        .class-select {
+            width: 100%;
+            padding: 6px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        
+        .btn-delete {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        
+        .btn-delete:hover {
+            background: #c82333;
+        }
+        
+        .btn-add {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 15px;
+        }
+        
+        .btn-add:hover {
+            background: #218838;
+        }
+        
+        .confidence-bar {
+            height: 4px;
+            background: #e0e0e0;
+            border-radius: 2px;
+            margin-top: 5px;
+            overflow: hidden;
+        }
+        
+        .confidence-fill {
+            height: 100%;
+            background: #007bff;
+            transition: width 0.3s;
+        }
+        
+        .frame-navigator {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 8px;
+        }
+        
+        .frame-navigator input[type="range"] {
+            flex: 1;
+        }
+        
+        .frame-navigator input[type="range"]:focus {
+            outline: 2px solid #007bff;
+            outline-offset: 2px;
+        }
+        
+        .frame-info {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .stats-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        
+        .drawing-mode {
+            cursor: crosshair !important;
+        }
+        
+        .drawing-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1000;
+        }
+        
+        .drawing-box {
+            position: absolute;
+            border: 2px dashed #00ff00;
+            background: rgba(0, 255, 0, 0.1);
+            pointer-events: none;
+        }
+        
+        /* Larger navigation buttons */
+        #prevFrame, #nextFrame, #prevDetection, #nextDetection, #prevCover, #nextCover {
+            font-size: 18px;
+            min-width: 44px;
+            height: 44px;
+            padding: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav style="margin-bottom: 20px;">
+            <span style="margin-right: 20px; font-weight: bold; color: #333;">🚴‍♂️ Bike Trail</span>
+            <a href="index.html" style="margin-right: 15px; text-decoration: none; color: #007bff;">Processor</a>
+            <a href="overview.html" style="margin-right: 15px; text-decoration: none; color: #007bff;">Overview</a>
+            <span style="color: #fff; background-color: #007bff; padding: 5px 10px; border-radius: 4px;">Detections</span>
+        </nav>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="sessionSelect">Select Session:</label>
+                <select id="sessionSelect">
+                    <option value="">Choose a session...</option>
+                </select>
+                <label for="frameInterval" style="margin-left: 20px;">Frame Interval:</label>
+                <select id="frameInterval">
+                    <option value="1">Every frame</option>
+                    <option value="2">Every 2nd frame</option>
+                    <option value="3">Every 3rd frame</option>
+                    <option value="4">Every 4th frame</option>
+                    <option value="5">Every 5th frame</option>
+                    <option value="10">Every 10th frame</option>
+                </select>
+                <button id="loadBtn">Load Detections</button>
+            </div>
+            
+            <div class="control-group">
+                <button id="saveBtn" class="btn-primary" disabled>Save Changes</button>
+                <button id="exportBtn" disabled>Export JSON</button>
+                <label style="margin-left: 20px;">
+                    <input type="checkbox" id="autoSave"> Auto-save
+                </label>
+            </div>
+        </div>
+        
+        <div class="stats-panel">
+            <div class="stat-card">
+                <div class="stat-value" id="totalFrames">0</div>
+                <div class="stat-label">Total Frames</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="framesWithDetections">0</div>
+                <div class="stat-label">Frames w/ Detections</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalDetections">0</div>
+                <div class="stat-label">Total Objects</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="peopleCount">0</div>
+                <div class="stat-label">People Detected</div>
+            </div>
+        </div>
+        
+        <div class="detection-container">
+            <div class="frame-viewer">
+                <canvas id="frameCanvas"></canvas>
+                <div class="detection-overlay" id="detectionOverlay"></div>
+                <div class="drawing-overlay" id="drawingOverlay">
+                    <div class="drawing-box" id="drawingBox" style="display: none;"></div>
+                </div>
+            </div>
+            
+            <div class="detection-sidebar">
+                <h3>Frame Detections</h3>
+                <button id="addDetectionBtn" class="btn-add">
+                    ➕ Draw Detection
+                </button>
+                <div id="detectionsContainer" style="max-height: calc(100vh - 200px); overflow-y: auto;"></div>
+            </div>
+        </div>
+        
+        <div class="frame-navigator" style="width: calc(100% - 440px); display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+            <div style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <label style="font-size: 12px; display: block; margin-bottom: 5px;">All Frames:</label>
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <button id="prevFrame">⬅️</button>
+                    <input type="range" id="frameSlider" min="0" max="100" value="0" style="flex: 1;" tabindex="1">
+                    <button id="nextFrame">➡️</button>
+                    <div class="frame-info" style="text-align: center; min-width: 40px; font-size: 11px;">
+                        <div><span id="currentFrame">0</span></div>
+                        <div><span id="totalFrameCount">0</span></div>
+                    </div>
+                </div>
+            </div>
+            <div style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <label style="font-size: 12px; display: block; margin-bottom: 5px;">With Detections:</label>
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <button id="prevDetection">⬅️</button>
+                    <input type="range" id="detectionSlider" min="0" max="100" value="0" style="flex: 1;" tabindex="2">
+                    <button id="nextDetection">➡️</button>
+                    <div class="frame-info" style="text-align: center; min-width: 40px; font-size: 11px;">
+                        <div><span id="currentDetectionFrame">-</span></div>
+                        <div><span id="detectionsFrameCount">0</span></div>
+                    </div>
+                </div>
+            </div>
+            <div style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                <label style="font-size: 12px; display: block; margin-bottom: 5px;">With Cover Effects:</label>
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <button id="prevCover">⬅️</button>
+                    <input type="range" id="coverSlider" min="0" max="100" value="0" style="flex: 1;" tabindex="3">
+                    <button id="nextCover">➡️</button>
+                    <div class="frame-info" style="text-align: center; min-width: 40px; font-size: 11px;">
+                        <div><span id="currentCoverFrame">-</span></div>
+                        <div><span id="coverFrameCount">0</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module">
+        import { CoverEffects } from './src/coverEffects.js';
+        
+        class DetectionEditor {
+            constructor() {
+                this.sessions = [];
+                this.currentSession = null;
+                this.detectionsData = null;
+                this.gpsData = null;
+                this.frameInterval = parseInt(localStorage.getItem('frameInterval')) || 1;
+                this.allFrameTimestamps = [];  // All frames at interval
+                this.detectionFrameTimestamps = [];  // Only frames with detections
+                this.coverFrameTimestamps = [];  // Only frames with cover effects (not "none")
+                this.currentFrameIndex = 0;  // Index in allFrameTimestamps
+                this.currentTimestamp = null;
+                this.timestampToDetections = {};  // Map timestamp to detections
+                this.hasChanges = false;
+                this.selectedDetection = null;
+                this.isDrawing = false;
+                this.drawStartX = 0;
+                this.drawStartY = 0;
+                
+                this.canvas = document.getElementById('frameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.currentImage = new Image();
+                this.coverEffects = new CoverEffects();
+                
+                this.init();
+            }
+            
+            async init() {
+                await this.loadSessions();
+                this.setupEventListeners();
+                this.initializeFrameInterval();
+            }
+            
+            initializeFrameInterval() {
+                // Set frame interval dropdown to saved value
+                document.getElementById('frameInterval').value = this.frameInterval;
+            }
+            
+            async loadSessions() {
+                try {
+                    const response = await fetch('/api/sessions');
+                    this.sessions = await response.json();
+                    
+                    const select = document.getElementById('sessionSelect');
+                    select.innerHTML = '<option value="">Choose a session...</option>';
+                    this.sessions.forEach(session => {
+                        const option = document.createElement('option');
+                        option.value = session;
+                        option.textContent = session;
+                        select.appendChild(option);
+                    });
+                } catch (error) {
+                    console.error('Failed to load sessions:', error);
+                }
+            }
+            
+            setupEventListeners() {
+                document.getElementById('loadBtn').addEventListener('click', () => this.loadDetections());
+                document.getElementById('saveBtn').addEventListener('click', () => this.saveDetections());
+                document.getElementById('exportBtn').addEventListener('click', () => this.exportDetections());
+                
+                // Frame interval change
+                document.getElementById('frameInterval').addEventListener('change', (e) => {
+                    this.frameInterval = parseInt(e.target.value);
+                    localStorage.setItem('frameInterval', this.frameInterval);
+                    // If session is loaded, rebuild frame lists with new interval
+                    if (this.currentSession) {
+                        this.buildFrameLists();
+                        this.updateUI();
+                        this.loadFrame();
+                    }
+                });
+                
+                // All frames slider
+                document.getElementById('prevFrame').addEventListener('click', () => this.navigateFrame(-1));
+                document.getElementById('nextFrame').addEventListener('click', () => this.navigateFrame(1));
+                document.getElementById('frameSlider').addEventListener('input', (e) => {
+                    this.currentFrameIndex = parseInt(e.target.value);
+                    this.loadFrame();
+                });
+                
+                // Detection frames slider
+                document.getElementById('prevDetection').addEventListener('click', () => this.navigateDetection(-1));
+                document.getElementById('nextDetection').addEventListener('click', () => this.navigateDetection(1));
+                document.getElementById('detectionSlider').addEventListener('input', (e) => {
+                    const detectionIndex = parseInt(e.target.value);
+                    if (detectionIndex < this.detectionFrameTimestamps.length) {
+                        const timestamp = this.detectionFrameTimestamps[detectionIndex];
+                        // Find this timestamp in all frames list
+                        const frameIndex = this.allFrameTimestamps.indexOf(timestamp);
+                        if (frameIndex !== -1) {
+                            this.currentFrameIndex = frameIndex;
+                            this.loadFrame();
+                        }
+                    }
+                });
+                
+                // Cover frames slider
+                document.getElementById('prevCover').addEventListener('click', () => this.navigateCover(-1));
+                document.getElementById('nextCover').addEventListener('click', () => this.navigateCover(1));
+                document.getElementById('coverSlider').addEventListener('input', (e) => {
+                    const coverIndex = parseInt(e.target.value);
+                    if (coverIndex < this.coverFrameTimestamps.length) {
+                        const timestamp = this.coverFrameTimestamps[coverIndex];
+                        // Find this timestamp in all frames list
+                        const frameIndex = this.allFrameTimestamps.indexOf(timestamp);
+                        if (frameIndex !== -1) {
+                            this.currentFrameIndex = frameIndex;
+                            this.loadFrame();
+                        }
+                    }
+                });
+                
+                document.getElementById('addDetectionBtn').addEventListener('click', () => this.startDrawing());
+                
+                // Drawing events
+                this.canvas.addEventListener('mousedown', (e) => this.onMouseDown(e));
+                this.canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
+                this.canvas.addEventListener('mouseup', (e) => this.onMouseUp(e));
+                
+                // Click debugging
+                this.canvas.addEventListener('click', (e) => this.debugClick(e));
+                
+                // Keyboard shortcuts (only for non-navigation keys)
+                document.addEventListener('keydown', (e) => {
+                    // Don't interfere with form inputs
+                    if (e.target.tagName === 'INPUT' || 
+                        e.target.tagName === 'SELECT' || 
+                        e.target.tagName === 'TEXTAREA') {
+                        return;
+                    }
+                    
+                    if (e.key === 'a' || e.key === 'A') {
+                        e.preventDefault();
+                        this.navigateFrame(-1);
+                    }
+                    if (e.key === 'd' || e.key === 'D') {
+                        e.preventDefault();
+                        this.navigateFrame(1);
+                    }
+                    if (e.key === 'b' || e.key === 'B') {
+                        e.preventDefault();
+                        this.startDrawing();
+                    }
+                    if (e.key === 'n' || e.key === 'N') {
+                        e.preventDefault();
+                        if (this.selectedDetection !== null) {
+                            this.updateDetectionProperty(this.selectedDetection, 'cover', 'none');
+                            this.rebuildCoverFramesList();
+                            this.renderDetections();
+                            this.updateDetectionsList();
+                        }
+                    }
+                    if (e.key === 'Delete' && this.selectedDetection !== null) {
+                        e.preventDefault();
+                        this.deleteDetection();
+                    }
+                    if (e.key === 'Escape') {
+                        e.preventDefault();
+                        this.cancelDrawing();
+                    }
+                });
+            }
+            
+            buildFrameLists() {
+                // Build list of all frames at the selected interval
+                this.allFrameTimestamps = [];
+                if (this.xmpData && this.xmpData.images) {
+                    for (let i = 0; i < this.xmpData.images.length; i += this.frameInterval) {
+                        this.allFrameTimestamps.push(this.xmpData.images[i].timestamp);
+                    }
+                }
+                
+                // Build map of timestamp to detections for quick lookup
+                this.timestampToDetections = {};
+                this.detectionFrameTimestamps = [];
+                this.coverFrameTimestamps = [];
+                
+                if (this.detectionsData && this.detectionsData.frames) {
+                    this.detectionsData.frames.forEach(frame => {
+                        if (frame.detections && frame.detections.length > 0) {
+                            this.timestampToDetections[frame.timestamp] = frame.detections;
+                            // Only add to detection frames if it's in our interval
+                            if (this.allFrameTimestamps.includes(frame.timestamp)) {
+                                this.detectionFrameTimestamps.push(frame.timestamp);
+                                
+                                // Check if any detections have cover effects (not "none")
+                                const hasCoverEffects = frame.detections.some(det => det.cover && det.cover !== 'none');
+                                if (hasCoverEffects) {
+                                    this.coverFrameTimestamps.push(frame.timestamp);
+                                }
+                            }
+                        }
+                    });
+                }
+                
+                // Sort timestamps
+                this.detectionFrameTimestamps.sort((a, b) => a - b);
+                this.coverFrameTimestamps.sort((a, b) => a - b);
+            }
+            
+            rebuildCoverFramesList() {
+                // Rebuild the cover frames list based on current detection states
+                this.coverFrameTimestamps = [];
+                
+                if (this.detectionsData && this.detectionsData.frames) {
+                    this.detectionsData.frames.forEach(frame => {
+                        if (frame.detections && frame.detections.length > 0) {
+                            // Only add to cover frames if it's in our interval and has cover effects
+                            if (this.allFrameTimestamps.includes(frame.timestamp)) {
+                                const hasCoverEffects = frame.detections.some(det => det.cover && det.cover !== 'none');
+                                if (hasCoverEffects) {
+                                    this.coverFrameTimestamps.push(frame.timestamp);
+                                }
+                            }
+                        }
+                    });
+                }
+                
+                // Sort cover timestamps
+                this.coverFrameTimestamps.sort((a, b) => a - b);
+                
+                // Update UI
+                this.updateUI();
+            }
+            
+            async loadDetections() {
+                const sessionName = document.getElementById('sessionSelect').value;
+                if (!sessionName) return;
+                
+                this.currentSession = sessionName;
+                
+                try {
+                    // Load xmp.json for all frame data
+                    const xmpResponse = await fetch(`/sessions/${sessionName}/xmp.json`);
+                    if (!xmpResponse.ok) {
+                        alert('Failed to load xmp.json. Make sure frames have been processed.');
+                        return;
+                    }
+                    this.xmpData = await xmpResponse.json();
+                    
+                    // Load detections.json if it exists
+                    const detectResponse = await fetch(`/sessions/${sessionName}/detections.json`);
+                    if (detectResponse.ok) {
+                        this.detectionsData = await detectResponse.json();
+                        
+                        // Log detection class counts for debugging
+                        const classCounts = {};
+                        if (this.detectionsData.frames) {
+                            this.detectionsData.frames.forEach(frame => {
+                                if (frame.detections) {
+                                    frame.detections.forEach(detection => {
+                                        const className = detection.class || 'unknown';
+                                        classCounts[className] = (classCounts[className] || 0) + 1;
+                                    });
+                                }
+                            });
+                        }
+                        console.log('Detection class counts:', classCounts);
+                    } else {
+                        // No detections file, create empty structure
+                        this.detectionsData = {
+                            session: sessionName,
+                            frames: []
+                        };
+                    }
+                    
+                    // Build frame lists
+                    this.buildFrameLists();
+                    
+                    this.currentFrameIndex = 0;
+                    this.updateUI();
+                    this.loadFrame();
+                    
+                    document.getElementById('saveBtn').disabled = false;
+                    document.getElementById('exportBtn').disabled = false;
+                    
+                } catch (error) {
+                    console.error('Failed to load data:', error);
+                    alert('Failed to load session data: ' + error.message);
+                }
+            }
+            
+            loadFrame() {
+                if (!this.allFrameTimestamps.length) return;
+                
+                // Get current timestamp from the all frames list
+                this.currentTimestamp = this.allFrameTimestamps[this.currentFrameIndex];
+                if (!this.currentTimestamp) return;
+                
+                // Load image
+                const imagePath = `/sessions/${this.currentSession}/${this.currentTimestamp}.jpg`;
+                this.currentImage.onload = () => {
+                    this.canvas.width = this.currentImage.width;
+                    this.canvas.height = this.currentImage.height;
+                    // Clear and redraw the image first
+                    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                    this.ctx.drawImage(this.currentImage, 0, 0);
+                    // Then draw detections on top
+                    this.renderDetections();
+                };
+                this.currentImage.src = imagePath;
+                
+                // Update frame info
+                document.getElementById('currentFrame').textContent = this.currentFrameIndex + 1;
+                document.getElementById('frameSlider').value = this.currentFrameIndex;
+                
+                // Update detection slider position and frame counter
+                const detectionIndex = this.detectionFrameTimestamps.indexOf(this.currentTimestamp);
+                if (detectionIndex !== -1) {
+                    document.getElementById('detectionSlider').value = detectionIndex;
+                    document.getElementById('currentDetectionFrame').textContent = detectionIndex + 1;
+                } else {
+                    document.getElementById('currentDetectionFrame').textContent = '-';
+                }
+                
+                // Update cover slider position and frame counter
+                const coverIndex = this.coverFrameTimestamps.indexOf(this.currentTimestamp);
+                if (coverIndex !== -1) {
+                    document.getElementById('coverSlider').value = coverIndex;
+                    document.getElementById('currentCoverFrame').textContent = coverIndex + 1;
+                } else {
+                    document.getElementById('currentCoverFrame').textContent = '-';
+                }
+                
+                // Update button states and detections list
+                this.updateButtonStates();
+                this.updateDetectionsList();
+                
+                // Auto-select detection with priority for non-'none' cover effects
+                const detections = this.timestampToDetections[this.currentTimestamp];
+                if (detections && detections.length > 0) {
+                    // First, look for a detection that has a cover effect (not 'none')
+                    let selectedIndex = -1;
+                    for (let i = 0; i < detections.length; i++) {
+                        if (detections[i].cover && detections[i].cover !== 'none') {
+                            selectedIndex = i;
+                            break;
+                        }
+                    }
+                    
+                    // If no detection has cover effects, select the first one
+                    if (selectedIndex === -1) {
+                        selectedIndex = 0;
+                    }
+                    
+                    this.selectedDetection = selectedIndex;
+                } else {
+                    this.selectedDetection = null; // No detections on this frame
+                }
+            }
+            
+            renderDetections() {
+                // Clear any existing overlay elements
+                const overlay = document.getElementById('detectionOverlay');
+                overlay.innerHTML = '';
+                
+                // Clear canvas and redraw the base image first
+                if (this.currentImage && this.currentImage.complete) {
+                    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                    this.ctx.drawImage(this.currentImage, 0, 0);
+                }
+                
+                const detections = this.timestampToDetections[this.currentTimestamp];
+                if (!detections) return;
+                
+                // Apply cover effects first (blur, infill, etc.)
+                this.coverEffects.applyCoverEffects(this.ctx, this.currentImage, detections);
+                
+                // Draw detection boxes on top
+                const ctx = this.canvas.getContext('2d');
+                
+                // Save current canvas state
+                ctx.save();
+                
+                detections.forEach((detection, index) => {
+                    const isSelected = index === this.selectedDetection;
+                    
+                    // Set stroke style
+                    ctx.strokeStyle = isSelected ? '#ff0000' : '#00ff00'; // Red for selected, green for others
+                    ctx.lineWidth = isSelected ? 5 : 4;
+                    
+                    // Draw rectangle
+                    ctx.strokeRect(detection.x, detection.y, detection.width, detection.height);
+                });
+                
+                // Restore canvas state
+                ctx.restore();
+                
+                // Draw timestamp, date, and speed overlays like the processor
+                this.drawTextOverlays();
+                
+            }
+            
+            drawTextOverlays() {
+                if (!this.currentTimestamp || !this.xmpData) return;
+                
+                const ctx = this.canvas.getContext('2d');
+                const currentFrame = this.xmpData.images.find(img => img.timestamp === this.currentTimestamp);
+                if (!currentFrame) return;
+                
+                ctx.save();
+                
+                // Calculate responsive font sizes
+                const baseFontSize = Math.max(16, this.canvas.width / 50);
+                const largeFontSize = Math.max(20, this.canvas.width / 40);
+                
+                // Draw date/time/timestamp in upper left corner
+                const date = new Date(this.currentTimestamp * 1000);
+                const dateString = date.toLocaleDateString();
+                const timeString = date.toLocaleTimeString();
+                const timestampString = `Timestamp: ${this.currentTimestamp}`;
+                
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(10, 10, 220, 85);
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.font = `${baseFontSize}px Arial`;
+                ctx.fillText(dateString, 20, 30);
+                ctx.fillText(timeString, 20, 55);
+                ctx.font = `${Math.max(12, baseFontSize - 4)}px Arial`;
+                ctx.fillText(timestampString, 20, 80);
+                
+                // Draw speed in bottom right corner (if available)
+                if (currentFrame.speed !== undefined) {
+                    const speedMph = currentFrame.speed * 2.237; // Convert m/s to mph
+                    const speedText = `${speedMph.toFixed(1)} mph`;
+                    
+                    const textMetrics = ctx.measureText(speedText);
+                    const textWidth = textMetrics.width;
+                    
+                    const x = this.canvas.width - textWidth - 30;
+                    const y = this.canvas.height - 30;
+                    
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                    ctx.fillRect(x - 10, y - baseFontSize - 5, textWidth + 20, baseFontSize + 15);
+                    
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = `${largeFontSize}px Arial`;
+                    ctx.fillText(speedText, x, y);
+                }
+                
+                ctx.restore();
+            }
+            
+            updateDetectionsList() {
+                const container = document.getElementById('detectionsContainer');
+                container.innerHTML = '';
+                
+                const detections = this.timestampToDetections[this.currentTimestamp];
+                if (!detections) return;
+                
+                console.log('Frame detections for timestamp', this.currentTimestamp, ':', detections);
+                
+                detections.forEach((detection, index) => {
+                    const form = document.createElement('div');
+                    form.className = 'detection-form';
+                    if (index === this.selectedDetection) {
+                        form.classList.add('selected');
+                    }
+                    
+                    // Get image dimensions for slider max values
+                    const maxX = this.canvas.width - detection.width;
+                    const maxY = this.canvas.height - detection.height;
+                    const maxWidth = this.canvas.width - detection.x;
+                    const maxHeight = this.canvas.height - detection.y;
+                    
+                    form.innerHTML = `
+                        <div class="detection-header">
+                            <div class="detection-title">Detection ${index + 1}</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Class:</label>
+                            <select class="class-select" data-index="${index}">
+                                <option value="manual" ${detection.class === 'manual' ? 'selected' : ''}>Manual</option>
+                                <option value="person" ${detection.class === 'person' ? 'selected' : ''}>Person</option>
+                                <option value="car" ${detection.class === 'car' ? 'selected' : ''}>Car</option>
+                                <option value="bicycle" ${detection.class === 'bicycle' ? 'selected' : ''}>Bicycle</option>
+                                <option value="bus" ${detection.class === 'bus' ? 'selected' : ''}>Bus</option>
+                                <option value="truck" ${detection.class === 'truck' ? 'selected' : ''}>Truck</option>
+                                <option value="motorcycle" ${detection.class === 'motorcycle' ? 'selected' : ''}>Motorcycle</option>
+                                <option value="dog" ${detection.class === 'dog' ? 'selected' : ''}>Dog</option>
+                                <option value="traffic light" ${detection.class === 'traffic light' ? 'selected' : ''}>Traffic Light</option>
+                                <option value="stop sign" ${detection.class === 'stop sign' ? 'selected' : ''}>Stop Sign</option>
+                                <option value="backpack" ${detection.class === 'backpack' ? 'selected' : ''}>Backpack</option>
+                                <option value="horse" ${detection.class === 'horse' ? 'selected' : ''}>Horse</option>
+                                <option value="cell phone" ${detection.class === 'cell phone' ? 'selected' : ''}>Cell Phone</option>
+                                <option value="bottle" ${detection.class === 'bottle' ? 'selected' : ''}>Bottle</option>
+                                <option value="bench" ${detection.class === 'bench' ? 'selected' : ''}>Bench</option>
+                                <option value="parking meter" ${detection.class === 'parking meter' ? 'selected' : ''}>Parking Meter</option>
+                            </select>
+                            <div class="detection-confidence" style="margin-top: 5px;">${Math.round(detection.confidence * 100)}% confidence</div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>X Position:</label>
+                            <div class="slider-group">
+                                <input type="range" min="0" max="${Math.max(maxX, 0)}" value="${detection.x}" 
+                                       data-index="${index}" data-field="x" tabindex="0">
+                                <span class="slider-value">${detection.x}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Y Position:</label>
+                            <div class="slider-group">
+                                <input type="range" min="0" max="${Math.max(maxY, 0)}" value="${detection.y}" 
+                                       data-index="${index}" data-field="y" tabindex="0">
+                                <span class="slider-value">${detection.y}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Width:</label>
+                            <div class="slider-group">
+                                <input type="range" min="10" max="${Math.max(maxWidth, 10)}" value="${detection.width}" 
+                                       data-index="${index}" data-field="width" tabindex="0">
+                                <span class="slider-value">${detection.width}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Height:</label>
+                            <div class="slider-group">
+                                <input type="range" min="10" max="${Math.max(maxHeight, 10)}" value="${detection.height}" 
+                                       data-index="${index}" data-field="height" tabindex="0">
+                                <span class="slider-value">${detection.height}</span>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Cover Type:</label>
+                            <div class="radio-group">
+                                <div class="radio-option">
+                                    <input type="radio" name="cover_${index}" value="none" id="none_${index}"
+                                           ${detection.cover === 'none' ? 'checked' : ''} data-index="${index}">
+                                    <label for="none_${index}">None</label>
+                                </div>
+                                <div class="radio-option">
+                                    <input type="radio" name="cover_${index}" value="blur" id="blur_${index}"
+                                           ${detection.cover === 'blur' ? 'checked' : ''} data-index="${index}">
+                                    <label for="blur_${index}">Blur</label>
+                                </div>
+                                <div class="radio-option">
+                                    <input type="radio" name="cover_${index}" value="infill" id="infill_${index}"
+                                           ${detection.cover === 'infill' ? 'checked' : ''} data-index="${index}">
+                                    <label for="infill_${index}">Infill</label>
+                                </div>
+                                <div class="radio-option">
+                                    <input type="radio" name="cover_${index}" value="blackout" id="blackout_${index}"
+                                           ${detection.cover === 'blackout' ? 'checked' : ''} data-index="${index}">
+                                    <label for="blackout_${index}">Blackout</label>
+                                </div>
+                                <div class="radio-option">
+                                    <input type="radio" name="cover_${index}" value="ellipse" id="ellipse_${index}"
+                                           ${detection.cover === 'ellipse' ? 'checked' : ''} data-index="${index}">
+                                    <label for="ellipse_${index}">Ellipse</label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group" style="display: ${(detection.cover === 'blackout' || detection.cover === 'ellipse') ? 'block' : 'none'};" 
+                             data-color-group="${index}">
+                            <label>Color:</label>
+                            <div class="color-presets" style="display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap;">
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #000000; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#000000" data-index="${index}"></div>
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #ffffff; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#ffffff" data-index="${index}"></div>
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #808080; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#808080" data-index="${index}"></div>
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #ff0000; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#ff0000" data-index="${index}"></div>
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #00ff00; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#00ff00" data-index="${index}"></div>
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #0000ff; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#0000ff" data-index="${index}"></div>
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #ffff00; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#ffff00" data-index="${index}"></div>
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #ff00ff; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#ff00ff" data-index="${index}"></div>
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #00ffff; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#00ffff" data-index="${index}"></div>
+                                <div class="color-swatch" style="width: 24px; height: 24px; background: #ffa500; border: 1px solid #ccc; cursor: pointer; border-radius: 2px;" 
+                                     data-color="#ffa500" data-index="${index}"></div>
+                            </div>
+                            <input type="color" value="${detection.color || '#000000'}" 
+                                   data-index="${index}" data-field="color" style="width: 100%; height: 30px;">
+                        </div>
+                        
+                        <button class="btn-delete" onclick="window.detectionEditor.deleteDetection(${index})">
+                            🗑️ Delete Detection
+                        </button>
+                    `;
+                    
+                    // Add click handler for form selection
+                    form.addEventListener('click', (e) => {
+                        if (!e.target.closest('button') && !e.target.closest('input') && !e.target.closest('select')) {
+                            this.selectDetection(index);
+                        }
+                    });
+                    
+                    container.appendChild(form);
+                });
+                
+                // Add event listeners for form controls
+                this.attachFormEventListeners();
+            }
+            
+            attachFormEventListeners() {
+                const container = document.getElementById('detectionsContainer');
+                
+                // Slider inputs
+                container.querySelectorAll('input[type="range"]').forEach(slider => {
+                    slider.addEventListener('input', (e) => {
+                        const index = parseInt(e.target.dataset.index);
+                        const field = e.target.dataset.field;
+                        const value = parseInt(e.target.value);
+                        
+                        this.updateDetectionProperty(index, field, value);
+                        
+                        // Update the displayed value
+                        const valueSpan = e.target.parentNode.querySelector('.slider-value');
+                        if (valueSpan) {
+                            valueSpan.textContent = value;
+                        }
+                        
+                        // Redraw detections
+                        this.renderDetections();
+                    });
+                });
+                
+                // Class select dropdowns
+                container.querySelectorAll('.class-select').forEach(select => {
+                    select.addEventListener('change', (e) => {
+                        const index = parseInt(e.target.dataset.index);
+                        const value = e.target.value;
+                        
+                        this.updateDetectionProperty(index, 'class', value);
+                        this.renderDetections();
+                    });
+                });
+                
+                // Radio buttons for cover type
+                container.querySelectorAll('input[type="radio"]').forEach(radio => {
+                    radio.addEventListener('change', (e) => {
+                        const index = parseInt(e.target.dataset.index);
+                        const value = e.target.value;
+                        
+                        this.updateDetectionProperty(index, 'cover', value);
+                        
+                        // Show/hide color picker based on cover type
+                        const colorGroup = container.querySelector(`[data-color-group="${index}"]`);
+                        if (colorGroup) {
+                            colorGroup.style.display = (value === 'blackout' || value === 'ellipse') ? 'block' : 'none';
+                        }
+                        
+                        // Rebuild cover frames list since cover effects changed
+                        this.rebuildCoverFramesList();
+                        
+                        this.renderDetections();
+                    });
+                });
+                
+                // Color picker inputs
+                container.querySelectorAll('input[type="color"]').forEach(colorInput => {
+                    colorInput.addEventListener('input', (e) => {
+                        const index = parseInt(e.target.dataset.index);
+                        const field = e.target.dataset.field;
+                        const value = e.target.value;
+                        
+                        this.updateDetectionProperty(index, field, value);
+                        this.renderDetections();
+                    });
+                });
+                
+                // Color swatch clicks
+                container.querySelectorAll('.color-swatch').forEach(swatch => {
+                    swatch.addEventListener('click', (e) => {
+                        const index = parseInt(e.target.dataset.index);
+                        const color = e.target.dataset.color;
+                        
+                        this.updateDetectionProperty(index, 'color', color);
+                        
+                        // Update the color picker to match
+                        const colorInput = container.querySelector(`input[type="color"][data-index="${index}"]`);
+                        if (colorInput) {
+                            colorInput.value = color;
+                        }
+                        
+                        this.renderDetections();
+                    });
+                });
+            }
+            
+            updateDetectionProperty(index, field, value) {
+                const detections = this.timestampToDetections[this.currentTimestamp];
+                if (!detections || !detections[index]) return;
+                
+                // Update in timestamp map
+                detections[index][field] = value;
+                
+                // Update in actual detections data
+                const frameData = this.detectionsData.frames.find(f => f.timestamp === this.currentTimestamp);
+                if (frameData && frameData.detections && frameData.detections[index]) {
+                    frameData.detections[index][field] = value;
+                }
+                
+                this.hasChanges = true;
+                
+                // Store which element has focus before any updates
+                const focusedElement = document.activeElement;
+                const wasFocused = focusedElement && focusedElement.dataset && 
+                                 focusedElement.dataset.index === index.toString() &&
+                                 focusedElement.dataset.field === field;
+                
+                // If we changed dimensions, we might need to update slider ranges
+                if (field === 'x' || field === 'y' || field === 'width' || field === 'height') {
+                    // Re-render the form to update slider ranges
+                    this.updateDetectionsList();
+                    
+                    // Restore focus if the slider was focused
+                    if (wasFocused) {
+                        setTimeout(() => {
+                            const newSlider = document.querySelector(`input[data-index="${index}"][data-field="${field}"]`);
+                            if (newSlider) {
+                                newSlider.focus();
+                            }
+                        }, 0);
+                    }
+                }
+            }
+            
+            selectDetection(index) {
+                this.selectedDetection = index;
+                this.renderDetections();
+                // Only update the visual highlighting in existing forms, don't rebuild them
+                this.updateFormHighlighting();
+                
+                // Scroll the corresponding form into view only if not already visible
+                setTimeout(() => {
+                    const forms = document.querySelectorAll('.detection-form');
+                    if (forms[index]) {
+                        const form = forms[index];
+                        const container = document.getElementById('detectionsContainer');
+                        const containerRect = container.getBoundingClientRect();
+                        const formRect = form.getBoundingClientRect();
+                        
+                        // Check if form is fully visible within the container
+                        const isFullyVisible = formRect.top >= containerRect.top && 
+                                             formRect.bottom <= containerRect.bottom;
+                        
+                        // Only scroll if not fully visible
+                        if (!isFullyVisible) {
+                            form.scrollIntoView({ 
+                                behavior: 'smooth', 
+                                block: 'center' 
+                            });
+                        }
+                    }
+                }, 100); // Small delay to ensure forms are rendered
+            }
+            
+            updateFormHighlighting() {
+                // Update form styling to show which detection is selected
+                const forms = document.querySelectorAll('.detection-form');
+                forms.forEach((form, index) => {
+                    if (index === this.selectedDetection) {
+                        form.style.border = '2px solid #ff0000';
+                        form.style.background = '#fff5f5';
+                    } else {
+                        form.style.border = '1px solid #ddd';
+                        form.style.background = '#fff';
+                    }
+                });
+            }
+            
+            deleteDetection(index = null) {
+                if (index === null) index = this.selectedDetection;
+                if (index === null) return;
+                
+                const detections = this.timestampToDetections[this.currentTimestamp];
+                if (!detections) return;
+                
+                detections.splice(index, 1);
+                
+                // Update the actual detections data
+                const frameData = this.detectionsData.frames.find(f => f.timestamp === this.currentTimestamp);
+                if (frameData) {
+                    frameData.detections = detections;
+                }
+                
+                // If no more detections, remove from detection timestamps list
+                if (detections.length === 0) {
+                    const idx = this.detectionFrameTimestamps.indexOf(this.currentTimestamp);
+                    if (idx !== -1) {
+                        this.detectionFrameTimestamps.splice(idx, 1);
+                    }
+                    delete this.timestampToDetections[this.currentTimestamp];
+                }
+                
+                this.hasChanges = true;
+                this.selectedDetection = null;
+                
+                this.rebuildCoverFramesList();
+                this.renderDetections();
+                this.updateDetectionsList();
+                this.updateStats();
+            }
+            
+            toggleCover(index) {
+                const detections = this.timestampToDetections[this.currentTimestamp];
+                if (!detections || !detections[index]) return;
+                
+                // Cycle through: 'none' -> 'blur' -> 'pixelate' -> 'blackout' -> 'none'
+                const coverTypes = ['none', 'blur', 'pixelate', 'blackout'];
+                const currentCover = detections[index].cover || 'none';
+                const currentIdx = coverTypes.indexOf(currentCover);
+                const nextIdx = (currentIdx + 1) % coverTypes.length;
+                detections[index].cover = coverTypes[nextIdx];
+                
+                // Update the actual detections data
+                const frameData = this.detectionsData.frames.find(f => f.timestamp === this.currentTimestamp);
+                if (frameData && frameData.detections) {
+                    frameData.detections[index].cover = coverTypes[nextIdx];
+                }
+                
+                this.hasChanges = true;
+                this.updateDetectionsList();
+            }
+            
+            startDrawing() {
+                this.isDrawing = false;
+                this.canvas.style.cursor = 'crosshair';
+                document.getElementById('addDetectionBtn').textContent = '✏️ Click and drag to draw';
+            }
+            
+            cancelDrawing() {
+                this.isDrawing = false;
+                this.canvas.style.cursor = 'default';
+                document.getElementById('drawingBox').style.display = 'none';
+                document.getElementById('addDetectionBtn').textContent = '➕ Draw Detection';
+            }
+            
+            debugClick(e) {
+                if (this.canvas.style.cursor === 'crosshair') return; // Skip during drawing
+                
+                // Don't process clicks if they're not actually on the canvas
+                if (e.target !== this.canvas) return;
+                
+                const rect = this.canvas.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const clickY = e.clientY - rect.top;
+                
+                // Calculate the actual image display area within the canvas (accounting for object-fit: contain)
+                const displayAspect = rect.width / rect.height;
+                const imageAspect = this.canvas.width / this.canvas.height;
+                
+                let imageDisplayWidth, imageDisplayHeight, offsetX, offsetY;
+                
+                if (displayAspect > imageAspect) {
+                    imageDisplayHeight = rect.height;
+                    imageDisplayWidth = rect.height * imageAspect;
+                    offsetX = (rect.width - imageDisplayWidth) / 2;
+                    offsetY = 0;
+                } else {
+                    imageDisplayWidth = rect.width;
+                    imageDisplayHeight = rect.width / imageAspect;
+                    offsetX = 0;
+                    offsetY = (rect.height - imageDisplayHeight) / 2;
+                }
+                
+                // Convert to image coordinates
+                const imageX = (clickX - offsetX) * (this.canvas.width / imageDisplayWidth);
+                const imageY = (clickY - offsetY) * (this.canvas.height / imageDisplayHeight);
+                
+                console.log(`Click at display (${clickX.toFixed(1)}, ${clickY.toFixed(1)}) = image (${imageX.toFixed(1)}, ${imageY.toFixed(1)})`);
+                
+                // Check if we hit any detections
+                const detections = this.timestampToDetections[this.currentTimestamp];
+                if (detections) {
+                    detections.forEach((detection, index) => {
+                        const inBounds = imageX >= detection.x && 
+                                        imageX <= detection.x + detection.width &&
+                                        imageY >= detection.y && 
+                                        imageY <= detection.y + detection.height;
+                        
+                        console.log(`Detection ${index}: (${detection.x}, ${detection.y}, ${detection.width}x${detection.height}) - Hit: ${inBounds}`);
+                        
+                        if (inBounds) {
+                            console.log(`Selecting detection ${index}`);
+                            this.selectDetection(index);
+                        }
+                    });
+                }
+            }
+            
+            onMouseDown(e) {
+                if (this.canvas.style.cursor !== 'crosshair') return;
+                
+                const rect = this.canvas.getBoundingClientRect();
+                this.drawStartX = e.clientX - rect.left;
+                this.drawStartY = e.clientY - rect.top;
+                this.isDrawing = true;
+                
+                const drawBox = document.getElementById('drawingBox');
+                drawBox.style.display = 'block';
+                drawBox.style.left = this.drawStartX + 'px';
+                drawBox.style.top = this.drawStartY + 'px';
+                drawBox.style.width = '0px';
+                drawBox.style.height = '0px';
+            }
+            
+            onMouseMove(e) {
+                if (!this.isDrawing) return;
+                
+                const rect = this.canvas.getBoundingClientRect();
+                const currentX = e.clientX - rect.left;
+                const currentY = e.clientY - rect.top;
+                
+                const drawBox = document.getElementById('drawingBox');
+                const width = Math.abs(currentX - this.drawStartX);
+                const height = Math.abs(currentY - this.drawStartY);
+                const left = Math.min(this.drawStartX, currentX);
+                const top = Math.min(this.drawStartY, currentY);
+                
+                drawBox.style.left = left + 'px';
+                drawBox.style.top = top + 'px';
+                drawBox.style.width = width + 'px';
+                drawBox.style.height = height + 'px';
+            }
+            
+            onMouseUp(e) {
+                if (!this.isDrawing) return;
+                
+                const rect = this.canvas.getBoundingClientRect();
+                const endX = e.clientX - rect.left;
+                const endY = e.clientY - rect.top;
+                
+                // Calculate the actual image display area within the canvas (accounting for object-fit: contain)
+                const displayAspect = rect.width / rect.height;
+                const imageAspect = this.canvas.width / this.canvas.height;
+                
+                let imageDisplayWidth, imageDisplayHeight, offsetX, offsetY;
+                
+                if (displayAspect > imageAspect) {
+                    // Canvas is wider than image aspect ratio - letterbox on sides
+                    imageDisplayHeight = rect.height;
+                    imageDisplayWidth = rect.height * imageAspect;
+                    offsetX = (rect.width - imageDisplayWidth) / 2;
+                    offsetY = 0;
+                } else {
+                    // Canvas is taller than image aspect ratio - letterbox on top/bottom
+                    imageDisplayWidth = rect.width;
+                    imageDisplayHeight = rect.width / imageAspect;
+                    offsetX = 0;
+                    offsetY = (rect.height - imageDisplayHeight) / 2;
+                }
+                
+                // Convert mouse coordinates to image coordinates
+                const imageX = (Math.min(this.drawStartX, endX) - offsetX) * (this.canvas.width / imageDisplayWidth);
+                const imageY = (Math.min(this.drawStartY, endY) - offsetY) * (this.canvas.height / imageDisplayHeight);
+                const imageWidth = Math.abs(endX - this.drawStartX) * (this.canvas.width / imageDisplayWidth);
+                const imageHeight = Math.abs(endY - this.drawStartY) * (this.canvas.height / imageDisplayHeight);
+                
+                // Ensure coordinates are within image bounds
+                const x = Math.max(0, Math.min(imageX, this.canvas.width));
+                const y = Math.max(0, Math.min(imageY, this.canvas.height));
+                const width = Math.max(10, Math.min(imageWidth, this.canvas.width - x));
+                const height = Math.max(10, Math.min(imageHeight, this.canvas.height - y));
+                
+                if (width > 10 && height > 10) {
+                    this.addDetection(x, y, width, height, 'manual');
+                }
+                
+                this.cancelDrawing();
+            }
+            
+            addDetection(x, y, width, height, className = 'person') {
+                const newDetection = {
+                    x: Math.round(x),
+                    y: Math.round(y),
+                    width: Math.round(width),
+                    height: Math.round(height),
+                    class: className,
+                    confidence: 1.0,
+                    cover: 'blur'
+                };
+                
+                // Add to timestamp map
+                if (!this.timestampToDetections[this.currentTimestamp]) {
+                    this.timestampToDetections[this.currentTimestamp] = [];
+                    // Add to detection frames list if not already there
+                    if (!this.detectionFrameTimestamps.includes(this.currentTimestamp)) {
+                        this.detectionFrameTimestamps.push(this.currentTimestamp);
+                        this.detectionFrameTimestamps.sort((a, b) => a - b);
+                    }
+                }
+                this.timestampToDetections[this.currentTimestamp].push(newDetection);
+                
+                // Update or create frame in detectionsData
+                let frameData = this.detectionsData.frames.find(f => f.timestamp === this.currentTimestamp);
+                if (!frameData) {
+                    frameData = { timestamp: this.currentTimestamp, detections: [] };
+                    this.detectionsData.frames.push(frameData);
+                }
+                frameData.detections.push(newDetection);
+                
+                this.hasChanges = true;
+                
+                this.rebuildCoverFramesList();
+                this.renderDetections();
+                this.updateDetectionsList();
+                this.updateStats();
+                
+                // Select the new detection and scroll to it
+                const newDetectionIndex = this.timestampToDetections[this.currentTimestamp].length - 1;
+                this.selectDetection(newDetectionIndex);
+            }
+            
+            navigateFrame(direction) {
+                const newIndex = this.currentFrameIndex + direction;
+                if (newIndex >= 0 && newIndex < this.allFrameTimestamps.length) {
+                    this.currentFrameIndex = newIndex;
+                    this.loadFrame();
+                }
+            }
+            
+            navigateDetection(direction) {
+                const currentDetectionIndex = this.detectionFrameTimestamps.indexOf(this.currentTimestamp);
+                let targetIndex;
+                
+                if (currentDetectionIndex === -1) {
+                    // Not on a detection frame, find next/previous relative to current position
+                    if (direction > 0) {
+                        // Find first detection after current timestamp
+                        targetIndex = this.detectionFrameTimestamps.findIndex(ts => ts > this.currentTimestamp);
+                        if (targetIndex === -1) targetIndex = 0; // Wrap to beginning if none found
+                    } else {
+                        // Find last detection before current timestamp
+                        for (let i = this.detectionFrameTimestamps.length - 1; i >= 0; i--) {
+                            if (this.detectionFrameTimestamps[i] < this.currentTimestamp) {
+                                targetIndex = i;
+                                break;
+                            }
+                        }
+                        if (targetIndex === undefined) targetIndex = this.detectionFrameTimestamps.length - 1; // Wrap to end if none found
+                    }
+                } else {
+                    targetIndex = currentDetectionIndex + direction;
+                }
+                
+                if (targetIndex >= 0 && targetIndex < this.detectionFrameTimestamps.length) {
+                    const timestamp = this.detectionFrameTimestamps[targetIndex];
+                    const frameIndex = this.allFrameTimestamps.indexOf(timestamp);
+                    if (frameIndex !== -1) {
+                        this.currentFrameIndex = frameIndex;
+                        this.loadFrame();
+                    }
+                }
+            }
+            
+            navigateCover(direction) {
+                const currentCoverIndex = this.coverFrameTimestamps.indexOf(this.currentTimestamp);
+                let targetIndex;
+                
+                if (currentCoverIndex === -1) {
+                    // Not on a cover frame, find next/previous relative to current position
+                    if (direction > 0) {
+                        // Find first cover frame after current timestamp
+                        targetIndex = this.coverFrameTimestamps.findIndex(ts => ts > this.currentTimestamp);
+                        if (targetIndex === -1) targetIndex = 0; // Wrap to beginning if none found
+                    } else {
+                        // Find last cover frame before current timestamp
+                        for (let i = this.coverFrameTimestamps.length - 1; i >= 0; i--) {
+                            if (this.coverFrameTimestamps[i] < this.currentTimestamp) {
+                                targetIndex = i;
+                                break;
+                            }
+                        }
+                        if (targetIndex === undefined) targetIndex = this.coverFrameTimestamps.length - 1; // Wrap to end if none found
+                    }
+                } else {
+                    targetIndex = currentCoverIndex + direction;
+                }
+                
+                if (targetIndex >= 0 && targetIndex < this.coverFrameTimestamps.length) {
+                    const timestamp = this.coverFrameTimestamps[targetIndex];
+                    const frameIndex = this.allFrameTimestamps.indexOf(timestamp);
+                    if (frameIndex !== -1) {
+                        this.currentFrameIndex = frameIndex;
+                        this.loadFrame();
+                    }
+                }
+            }
+            
+            updateUI() {
+                // Update all frames slider
+                document.getElementById('frameSlider').max = Math.max(0, this.allFrameTimestamps.length - 1);
+                document.getElementById('totalFrameCount').textContent = this.allFrameTimestamps.length;
+                
+                // Update detection frames slider
+                document.getElementById('detectionSlider').max = Math.max(0, this.detectionFrameTimestamps.length - 1);
+                document.getElementById('detectionsFrameCount').textContent = this.detectionFrameTimestamps.length;
+                
+                // Update cover frames slider
+                document.getElementById('coverSlider').max = Math.max(0, this.coverFrameTimestamps.length - 1);
+                document.getElementById('coverFrameCount').textContent = this.coverFrameTimestamps.length;
+                
+                this.updateButtonStates();
+                this.updateStats();
+            }
+            
+            updateButtonStates() {
+                // All frames buttons
+                const frameAtStart = this.currentFrameIndex <= 0;
+                const frameAtEnd = this.currentFrameIndex >= this.allFrameTimestamps.length - 1;
+                
+                document.getElementById('prevFrame').disabled = frameAtStart;
+                document.getElementById('nextFrame').disabled = frameAtEnd;
+                
+                // Detection frames buttons - base on slider position, not current timestamp match
+                const detectionSliderValue = parseInt(document.getElementById('detectionSlider').value) || 0;
+                const detectionAtStart = detectionSliderValue <= 0;
+                const detectionAtEnd = detectionSliderValue >= this.detectionFrameTimestamps.length - 1;
+                const hasDetections = this.detectionFrameTimestamps.length > 0;
+                
+                document.getElementById('prevDetection').disabled = !hasDetections || detectionAtStart;
+                document.getElementById('nextDetection').disabled = !hasDetections || detectionAtEnd;
+                
+                // Cover frames buttons - base on slider position, not current timestamp match  
+                const coverSliderValue = parseInt(document.getElementById('coverSlider').value) || 0;
+                const coverAtStart = coverSliderValue <= 0;
+                const coverAtEnd = coverSliderValue >= this.coverFrameTimestamps.length - 1;
+                const hasCoverEffects = this.coverFrameTimestamps.length > 0;
+                
+                document.getElementById('prevCover').disabled = !hasCoverEffects || coverAtStart;
+                document.getElementById('nextCover').disabled = !hasCoverEffects || coverAtEnd;
+            }
+            
+            updateStats() {
+                if (!this.detectionsData) return;
+                
+                const totalFrames = this.detectionsData.frames.length;
+                let framesWithDetections = 0;
+                let totalDetections = 0;
+                let peopleCount = 0;
+                
+                this.detectionsData.frames.forEach(frame => {
+                    if (frame.detections && frame.detections.length > 0) {
+                        framesWithDetections++;
+                        totalDetections += frame.detections.length;
+                        frame.detections.forEach(det => {
+                            if (det.class === 'person') peopleCount++;
+                        });
+                    }
+                });
+                
+                document.getElementById('totalFrames').textContent = totalFrames;
+                document.getElementById('framesWithDetections').textContent = framesWithDetections;
+                document.getElementById('totalDetections').textContent = totalDetections;
+                document.getElementById('peopleCount').textContent = peopleCount;
+            }
+            
+            async saveDetections() {
+                if (!this.detectionsData || !this.currentSession) return;
+                
+                try {
+                    const response = await fetch(`/api/sessions/${this.currentSession}/detections`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(this.detectionsData)
+                    });
+                    
+                    if (response.ok) {
+                        this.hasChanges = false;
+                        console.log('Detections saved successfully');
+                        // Update button text briefly to show success
+                        const saveBtn = document.getElementById('saveBtn');
+                        const originalText = saveBtn.textContent;
+                        saveBtn.textContent = '✓ Saved';
+                        saveBtn.style.background = '#28a745';
+                        setTimeout(() => {
+                            saveBtn.textContent = originalText;
+                            saveBtn.style.background = '';
+                        }, 2000);
+                    } else {
+                        throw new Error('Failed to save');
+                    }
+                } catch (error) {
+                    console.error('Failed to save detections:', error);
+                    alert('Failed to save detections. Check console for details.');
+                }
+            }
+            
+            exportDetections() {
+                if (!this.detectionsData) return;
+                
+                const blob = new Blob([JSON.stringify(this.detectionsData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${this.currentSession}_detections.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+        }
+        
+        window.detectionEditor = new DetectionEditor();
+    </script>
+</body>
+</html>

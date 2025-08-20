@@ -4,6 +4,7 @@ import { metersToFeet, getAltitudeInUnit, getUnitLabel, formatDistance, calculat
 import { getStorageItem, getStorageInt, getStorageFloat, setStorageItem } from './storageUtils.js';
 import { getElementById, setElementText, showElement, hideElement } from './domUtils.js';
 import { updateProgress, setButtonLoading, setButtonNormal, showProcessingUI, hideProcessingUI, updatePauseButton } from './uiStateUtils.js';
+import { CoverEffects } from './coverEffects.js';
 
 class BikeTrailProcessor {
     constructor() {
@@ -22,6 +23,7 @@ class BikeTrailProcessor {
         this.bikeIcon = null;
         this.routeMap = null;
         this.lastValidBearing = 90; // Default to east
+        this.lastWindType = null; // For wind type hysteresis
         this.detailMap = null;
         this.routeMapCanvas = null;
         this.detailMapCanvas = null;
@@ -29,6 +31,7 @@ class BikeTrailProcessor {
         this.frameInterval = getStorageInt('frameInterval', 1); // Load from localStorage or default to every frame
         this.processingDelegate = getStorageItem('processingDelegate', 'cpu'); // Load from localStorage or default to CPU
         this.detailZoom = getStorageInt('detailZoom', 17); // Load from localStorage or default to street level
+        this.skipDetection = getStorageItem('skipDetection', 'true') === 'true'; // Load from localStorage or default to skip detection
         
         // Worker readiness state
         this.workerDetectionReady = false;
@@ -56,6 +59,18 @@ class BikeTrailProcessor {
         // Popup capture canvas
         this.popupCanvas = null;
         
+        // Cover effects instance
+        this.coverEffects = new CoverEffects();
+        
+        // Detection data for cover effects
+        this.detectionsData = null;
+        this.timestampToDetections = {};
+        
+        // Temporary canvas for applying cover effects at original resolution
+        this.detectionCanvas = document.createElement('canvas');
+        this.detectionCanvas.width = 1920;
+        this.detectionCanvas.height = 1080;
+        this.detectionCtx = this.detectionCanvas.getContext('2d');
         
         // Initialize web worker
         this.initializeWorker();
@@ -187,6 +202,14 @@ class BikeTrailProcessor {
         if (this.displayCtx) {
             this.displayCtx = null;
         }
+        if (this.detectionCanvas) {
+            this.detectionCanvas.width = 1;
+            this.detectionCanvas.height = 1;
+            this.detectionCanvas = null;
+        }
+        if (this.detectionCtx) {
+            this.detectionCtx = null;
+        }
     }
 
     cleanupWorker() {
@@ -313,6 +336,11 @@ class BikeTrailProcessor {
             }
         });
         
+        document.getElementById('skipDetection').addEventListener('change', (e) => {
+            this.skipDetection = e.target.checked;
+            setStorageItem('skipDetection', this.skipDetection);
+        });
+        
         // Cache management event listeners
         document.getElementById('refreshCacheBtn').addEventListener('click', () => this.loadCacheStats());
         document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
@@ -373,6 +401,12 @@ class BikeTrailProcessor {
         if (detailZoomSelect) {
             detailZoomSelect.value = this.detailZoom;
         }
+        
+        // Set the skip detection checkbox to the loaded/default value
+        const skipDetectionCheckbox = document.getElementById('skipDetection');
+        if (skipDetectionCheckbox) {
+            skipDetectionCheckbox.checked = this.skipDetection;
+        }
     }
     
     updateProcessCount(processed = 0) {
@@ -429,6 +463,42 @@ class BikeTrailProcessor {
             this.currentSession = sessionName;
             this.images = data.images;
             this.currentIndex = 0;
+            
+            // Load detections.json if it exists
+            try {
+                const detectionsResponse = await fetch(`/sessions/${sessionName}/detections.json`);
+                if (detectionsResponse.ok) {
+                    this.detectionsData = await detectionsResponse.json();
+                    console.log(`Loaded detections.json with ${this.detectionsData.frames?.length || 0} frames`);
+                    
+                    // Create timestamp to detections map for quick lookup
+                    this.timestampToDetections = {};
+                    if (this.detectionsData.frames) {
+                        this.detectionsData.frames.forEach(frame => {
+                            if (frame.detections && frame.detections.length > 0) {
+                                // Filter out detections with cover='none'
+                                const activeDetections = frame.detections.filter(det => 
+                                    det.cover && det.cover !== 'none'
+                                );
+                                if (activeDetections.length > 0) {
+                                    this.timestampToDetections[frame.timestamp] = activeDetections;
+                                }
+                            }
+                        });
+                    }
+                    console.log(`Found ${Object.keys(this.timestampToDetections).length} frames with active cover effects`);
+                } else {
+                    this.detectionsData = null;
+                    this.timestampToDetections = {};
+                }
+            } catch (error) {
+                console.log('No detections.json found for session:', sessionName);
+                this.detectionsData = null;
+                this.timestampToDetections = {};
+            }
+            
+            // Generate interpolated GPS points for smooth animation
+            this.generateInterpolatedGpsPoints();
             
             // Calculate total distance from GPS points
             this.totalDistance = calculateTotalDistance(this.images);
@@ -716,24 +786,55 @@ class BikeTrailProcessor {
                 img.src = imagePath;
             });
             
+            // Clear the main canvas
             this.ctx.fillStyle = '#000';
             this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
             
-            this.ctx.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
+            // Check if we have detections from detections.json for this frame
+            const hasDetectionsFromFile = this.timestampToDetections && 
+                                         this.timestampToDetections[imageData.timestamp] && 
+                                         this.timestampToDetections[imageData.timestamp].length > 0;
             
-            // Detect people and faces using worker for privacy blurring
-            const detectionResult = await this.detectPeopleAndFaces(img, imageData.timestamp);
-            
-            // Apply privacy blurring to detected people and faces
-            if (detectionResult && !detectionResult.fallback) {
-                this.applyPrivacyBlurring(detectionResult, img);
+            // Apply cover effects at original resolution if we have detections from file
+            if (hasDetectionsFromFile) {
+                // Clear and draw image at 1920x1080 on the reusable detection canvas
+                this.detectionCtx.clearRect(0, 0, 1920, 1080);
+                this.detectionCtx.drawImage(img, 0, 0, 1920, 1080);
+                
+                // Apply cover effects at original resolution
+                const detections = this.timestampToDetections[imageData.timestamp];
+                this.coverEffects.applyCoverEffects(this.detectionCtx, img, detections);
+                
+                // Now draw the processed image to the main canvas at 2560x1440
+                this.ctx.drawImage(this.detectionCanvas, 0, 0, 1920, 1080, 0, 0, this.canvas.width, this.canvas.height);
+                
+            } else {
+                // No detections from file, draw image normally
+                this.ctx.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
+                
+                // Only do automatic detection if detection is not skipped globally
+                let detectionResult = null;
+                if (!this.skipDetection) {
+                    detectionResult = await this.detectPeopleAndFaces(img, imageData.timestamp);
+                    
+                    // Apply privacy blurring to detected people and faces
+                    if (detectionResult && !detectionResult.fallback) {
+                        this.applyPrivacyBlurring(detectionResult, img);
+                    }
+                }
             }
             
-            // Draw date/time in upper left corner
-            this.drawDateTime(imageData.timestamp);
+            // Draw speed in bottom left corner
+            this.drawSpeed(imageData.speed, 'bottom-left');
             
-            // Draw speed in bottom right corner
-            this.drawSpeed(imageData.speed);
+            // Draw wind above speed if available
+            this.drawWind(imageData, 'bottom-left');
+            
+            // Draw date/time in bottom right corner
+            this.drawDateTime(imageData.timestamp, 'bottom-right');
+            
+            // Draw temperature above date/time if available
+            this.drawTemperature(imageData, 'bottom-right');
             
             // Update detail map position (maps are now in popup)
             this.updateDetailMapPosition(imageData);
@@ -771,9 +872,9 @@ class BikeTrailProcessor {
         this.ctx.font = `${Math.floor(this.canvas.width / 80)}px Arial`; // Much larger font
         this.ctx.fillStyle = '#fff';
         
-        // Define altitude meter dimensions: taller height, 3x width
-        const altitudeWidth = overlaySize * 3;
-        const altitudeHeight = overlaySize * 0.75;
+        // Define altitude meter dimensions: wider for distance display, taller height
+        const altitudeWidth = overlaySize * 3.5; // Increased width for more space
+        const altitudeHeight = overlaySize * 0.85; // Increased height for distance display
         
         // Map dimensions to match captured map size (600x400 -> scale to fit overlay size)
         const mapWidth = overlaySize * 2;
@@ -1043,6 +1144,93 @@ class BikeTrailProcessor {
             zoomLevel: this.detailZoom
         }, '*');
     }
+    
+    calculateInterpolatedPosition(currentImage, currentIndex) {
+        // If no GPS data, return current position
+        if (!currentImage.lat || !currentImage.lon) {
+            return { lat: currentImage.lat, lon: currentImage.lon };
+        }
+        
+        // Use interpolated GPS points if available, otherwise fallback to current position
+        if (!this.interpolatedGpsPoints || this.interpolatedGpsPoints.length === 0) {
+            return { lat: currentImage.lat, lon: currentImage.lon };
+        }
+        
+        // Find closest interpolated GPS point by timestamp
+        const currentTimestamp = parseInt(currentImage.filename.replace('.jpg', ''));
+        let closestPoint = this.interpolatedGpsPoints[0];
+        let minDiff = Math.abs(currentTimestamp - closestPoint.timestamp);
+        
+        for (const point of this.interpolatedGpsPoints) {
+            const diff = Math.abs(currentTimestamp - point.timestamp);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closestPoint = point;
+            }
+        }
+        
+        return { lat: closestPoint.lat, lon: closestPoint.lon };
+    }
+    
+    generateInterpolatedGpsPoints() {
+        // Create quarter, half, and three-quarter points between all existing GPS points for smoother animation
+        this.interpolatedGpsPoints = [];
+        
+        // Get all images with GPS data
+        const gpsImages = this.images.filter(img => img.lat && img.lon);
+        if (gpsImages.length < 2) {
+            return; // Need at least 2 points to interpolate
+        }
+        
+        // Add all original GPS points
+        for (const img of gpsImages) {
+            this.interpolatedGpsPoints.push({
+                timestamp: parseInt(img.filename.replace('.jpg', '')),
+                lat: img.lat,
+                lon: img.lon
+            });
+        }
+        
+        // Add quarter, half, and three-quarter points between consecutive GPS points
+        for (let i = 0; i < gpsImages.length - 1; i++) {
+            const current = gpsImages[i];
+            const next = gpsImages[i + 1];
+            
+            const currentTimestamp = parseInt(current.filename.replace('.jpg', ''));
+            const nextTimestamp = parseInt(next.filename.replace('.jpg', ''));
+            
+            // Create interpolated points at 25%, 50%, and 75% positions
+            const timeDiff = nextTimestamp - currentTimestamp;
+            const latDiff = next.lat - current.lat;
+            const lonDiff = next.lon - current.lon;
+            
+            // Quarter point (25%)
+            this.interpolatedGpsPoints.push({
+                timestamp: Math.round(currentTimestamp + timeDiff * 0.25),
+                lat: current.lat + latDiff * 0.25,
+                lon: current.lon + lonDiff * 0.25
+            });
+            
+            // Half point (50%)
+            this.interpolatedGpsPoints.push({
+                timestamp: Math.round(currentTimestamp + timeDiff * 0.5),
+                lat: current.lat + latDiff * 0.5,
+                lon: current.lon + lonDiff * 0.5
+            });
+            
+            // Three-quarter point (75%)
+            this.interpolatedGpsPoints.push({
+                timestamp: Math.round(currentTimestamp + timeDiff * 0.75),
+                lat: current.lat + latDiff * 0.75,
+                lon: current.lon + lonDiff * 0.75
+            });
+        }
+        
+        // Sort by timestamp for faster lookup
+        this.interpolatedGpsPoints.sort((a, b) => a.timestamp - b.timestamp);
+        
+        console.log(`📍 Generated ${this.interpolatedGpsPoints.length} interpolated GPS points from ${gpsImages.length} original points (4x density with quarter-point interpolation)`);
+    }
 
     updateDetailMapPosition(currentImage) {
         if (!currentImage || !currentImage.lat || !currentImage.lon || !this.mapPopup) return;
@@ -1050,6 +1238,9 @@ class BikeTrailProcessor {
         
         const currentIndex = this.images.indexOf(currentImage);
         let bearing = 90; // Default east
+        
+        // Calculate interpolated coordinates for smooth animation
+        const animCoords = this.calculateInterpolatedPosition(currentImage, currentIndex);
         
         if (currentIndex === 0) {
             // First frame: use its bearing
@@ -1083,11 +1274,17 @@ class BikeTrailProcessor {
         this.lastValidBearing = bearing;
         
         
+        // Log interpolation data for debugging
+        // console.log(`🗺️ Frame ${currentIndex} (${currentImage.filename}): 
+        //     Actual GPS: ${currentImage.lat?.toFixed(7)}, ${currentImage.lon?.toFixed(7)}
+        //     Interpolated: ${animCoords.lat?.toFixed(7)}, ${animCoords.lon?.toFixed(7)}
+        //     Difference: ${((animCoords.lat - currentImage.lat) * 1000000).toFixed(1)}µ° lat, ${((animCoords.lon - currentImage.lon) * 1000000).toFixed(1)}µ° lon`);
+
         // Send position update to popup
         this.mapPopup.postMessage({
             type: 'updateDetailPosition',
-            lat: currentImage.lat,
-            lon: currentImage.lon,
+            lat: animCoords.lat,
+            lon: animCoords.lon,
             bearing: bearing,
             rawCompass: currentIndex === 0 ? currentImage.compass || null : null,
             zoomLevel: this.detailZoom
@@ -2001,9 +2198,9 @@ CROP COORDINATES:
     drawAltitudeChart(pos, width, height, currentIndex) {
         if (!this.images.length || this.altitudeRange.max === 0) return;
         
-        // Better margins for the wider, shorter rectangle
-        const chartWidth = width - 80;
-        const chartHeight = height - 50;
+        // Better margins for the wider rectangle with distance display
+        const chartWidth = width - 120; // More right margin for space
+        const chartHeight = height - 70; // More bottom margin for distance
         const chartX = pos.x + 60; // More left margin for labels
         const chartY = pos.y + 30;
         
@@ -2113,8 +2310,15 @@ CROP COORDINATES:
         // Total elevation gain (top)
         this.ctx.fillText(`${displayedAltRange}${getUnitLabel(this.altitudeUnit)}`, pos.x + 15, pos.y + 40);
         
-        // Base level (bottom)  
+        // Base level (bottom) - zero works for both altitude and distance axes
         this.ctx.fillText(`0`, pos.x + 15, pos.y + height - 20);
+        
+        // Total distance display in lower right
+        const totalFormattedDistance = formatDistance(this.totalDistance, this.altitudeUnit);
+        this.ctx.font = `${Math.floor(this.canvas.width / 100)}px Arial`; // Slightly smaller font for distance
+        const distanceText = totalFormattedDistance;
+        const textWidth = this.ctx.measureText(distanceText).width;
+        this.ctx.fillText(distanceText, pos.x + width - textWidth - 15, pos.y + height - 10);
     }
 
     drawBikeIcon(x, y) {
@@ -2156,7 +2360,7 @@ CROP COORDINATES:
         this.ctx.shadowBlur = 0;
     }
 
-    drawDateTime(timestamp) {
+    drawDateTime(timestamp, position = 'bottom-left') {
         if (!timestamp) return;
         
         // Create date object from timestamp
@@ -2178,22 +2382,30 @@ CROP COORDINATES:
         const dateTimeString = `${day}-${month}-${year} ${hours}:${minutes} ${ampm}`;
         
         // Set up text styling
-        const fontSize = Math.floor(this.canvas.width / 40); // Double the font size
+        const fontSize = Math.floor(this.canvas.width / 40);
         this.ctx.font = `${fontSize}px Arial`;
         this.ctx.fillStyle = '#ffffff';
         this.ctx.strokeStyle = '#000000';
         this.ctx.lineWidth = 2;
         
-        // Position in bottom left corner with padding
-        const x = 20;
-        const y = this.canvas.height - 20;
+        // Calculate position based on parameter
+        let x, y;
+        if (position === 'bottom-right') {
+            const textMetrics = this.ctx.measureText(dateTimeString);
+            x = this.canvas.width - textMetrics.width - 20;
+            y = this.canvas.height - 20;
+        } else {
+            // Default bottom-left
+            x = 20;
+            y = this.canvas.height - 20;
+        }
         
         // Draw text with black outline for visibility
         this.ctx.strokeText(dateTimeString, x, y);
         this.ctx.fillText(dateTimeString, x, y);
     }
 
-    drawSpeed(speedMPS) {
+    drawSpeed(speedMPS, position = 'bottom-right') {
         if (!speedMPS && speedMPS !== 0) return;
         
         // Convert speed based on altitude unit preference
@@ -2218,18 +2430,173 @@ CROP COORDINATES:
         this.ctx.strokeStyle = '#000000';
         this.ctx.lineWidth = 2;
         
-        // Measure text width for right alignment
-        const textMetrics = this.ctx.measureText(speedString);
-        const textWidth = textMetrics.width;
-        
-        // Position in bottom right corner with padding
-        const x = this.canvas.width - textWidth - 20;
-        const y = this.canvas.height - 20;
+        // Calculate position based on parameter
+        let x, y;
+        if (position === 'bottom-left') {
+            x = 20;
+            y = this.canvas.height - 20;
+        } else {
+            // Default bottom-right
+            const textMetrics = this.ctx.measureText(speedString);
+            x = this.canvas.width - textMetrics.width - 20;
+            y = this.canvas.height - 20;
+        }
         
         // Draw text with black outline for visibility
         this.ctx.strokeText(speedString, x, y);
         this.ctx.fillText(speedString, x, y);
     }
+
+    drawWind(imageData, position = 'bottom-left') {
+        if (!imageData.weather || (!imageData.weather.windSpeed && !imageData.weather.windDirection)) return;
+        
+        const weather = imageData.weather;
+        let windText = '';
+        
+        if (weather.windSpeed !== undefined) {
+            const windUnit = this.altitudeUnit === 'ft' ? 'mph' : 'km/h';
+            let windSpeed = weather.windSpeed;
+            
+            // Convert wind speed if needed  
+            if (this.altitudeUnit === 'ft' && weather.windSpeedUnit === 'km/h') {
+                windSpeed = windSpeed * 0.621371; // Convert km/h to mph
+            } else if (this.altitudeUnit === 'm' && weather.windSpeedUnit === 'mph') {
+                windSpeed = windSpeed * 1.60934; // Convert mph to km/h
+            }
+            
+            // Get bike bearing for wind analysis (use existing bearing calculation)
+            let bikeBearing = this.lastValidBearing;
+            
+            // Get wind direction and determine wind type relative to bike direction
+            let windType = '';
+            let directionText = '';
+            
+            if (weather.windDirection !== undefined) {
+                let windDirection = weather.windDirection;
+                
+                // Convert wind direction to degrees if it's a string, but keep original for display
+                if (typeof windDirection === 'string') {
+                    directionText = windDirection;
+                    const directionMap = { 'N': 0, 'NE': 45, 'E': 90, 'SE': 135, 'S': 180, 'SW': 225, 'W': 270, 'NW': 315 };
+                    windDirection = directionMap[windDirection] || 0;
+                } else if (typeof windDirection === 'number') {
+                    // Convert degrees to compass direction for display
+                    const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+                    const index = Math.round(windDirection / 45) % 8;
+                    directionText = directions[index];
+                }
+                
+                // Calculate wind type relative to bike direction
+                if (bikeBearing !== null) {
+                    // Wind direction is where wind is coming FROM
+                    // We need to compare it to where the bike is going TO
+                    // So we need the opposite of wind direction for tailwind calculation
+                    let windFromDirection = windDirection;
+                    let windToDirection = (windDirection + 180) % 360; // Where wind is going TO
+                    
+                    // Calculate angle between bike direction and wind direction (FROM)
+                    let headwindAngle = Math.abs(bikeBearing - windFromDirection);
+                    if (headwindAngle > 180) headwindAngle = 360 - headwindAngle;
+                    
+                    // Calculate angle between bike direction and wind TO direction  
+                    let tailwindAngle = Math.abs(bikeBearing - windToDirection);
+                    if (tailwindAngle > 180) tailwindAngle = 360 - tailwindAngle;
+                    
+                    
+                    // Use hysteresis to prevent flickering at boundaries
+                    // If we already have a wind type, use tighter thresholds to change it
+                    const currentWindType = this.lastWindType;
+                    
+                    if (headwindAngle <= 40) {
+                        windType = 'headwind';
+                    } else if (tailwindAngle <= 40) {
+                        windType = 'tailwind';
+                    } else if (headwindAngle >= 50 && tailwindAngle >= 50) {
+                        windType = 'crosswind';
+                    } else {
+                        // In the gray area - keep previous type if we had one
+                        windType = currentWindType || 'crosswind';
+                    }
+                    
+                    this.lastWindType = windType;
+                }
+            }
+            
+            // Build wind text with direction and type
+            if (windType && directionText) {
+                windText = `${windSpeed.toFixed(0)} ${windUnit} ${directionText} ${windType}`;
+            } else if (directionText) {
+                windText = `${windSpeed.toFixed(0)} ${windUnit} ${directionText}`;
+            } else {
+                windText = `${windSpeed.toFixed(0)} ${windUnit}`;
+            }
+        }
+        
+        if (!windText) return;
+        
+        // Set up text styling - same size as temperature
+        const fontSize = Math.floor(this.canvas.width / 50);
+        this.ctx.font = `${fontSize}px Arial`;
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.strokeStyle = '#000000';
+        this.ctx.lineWidth = 2;
+        
+        // Position above speed in bottom left
+        const x = 20;
+        const y = this.canvas.height - 90; // Above speed text with more space
+        
+        // Set wind color to light blue
+        this.ctx.fillStyle = '#87CEEB'; // Sky blue
+        
+        // Draw text with black outline for visibility
+        this.ctx.strokeText(windText, x, y);
+        this.ctx.fillText(windText, x, y);
+    }
+
+    drawTemperature(imageData, position = 'bottom-right') {
+        if (!imageData.weather || imageData.weather.temperature === undefined) return;
+        
+        const weather = imageData.weather;
+        const tempUnit = this.altitudeUnit === 'ft' ? 'F' : 'C';
+        let temp = weather.temperature;
+        
+        // Convert temperature if needed
+        if (this.altitudeUnit === 'ft' && weather.temperatureUnit === 'C') {
+            temp = (temp * 9/5) + 32; // Convert C to F
+        } else if (this.altitudeUnit === 'm' && weather.temperatureUnit === 'F') {
+            temp = (temp - 32) * 5/9; // Convert F to C
+        }
+        
+        const tempText = `${temp.toFixed(0)}°${tempUnit}`;
+        
+        // Set up text styling - smaller than date/time
+        const fontSize = Math.floor(this.canvas.width / 50);
+        this.ctx.font = `${fontSize}px Arial`;
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.strokeStyle = '#000000';
+        this.ctx.lineWidth = 2;
+        
+        // Position above date/time in bottom right
+        const textMetrics = this.ctx.measureText(tempText);
+        const x = this.canvas.width - textMetrics.width - 20;
+        const y = this.canvas.height - 90; // Above date/time with more space
+        
+        // Set temperature color based on ranges
+        let tempColor;
+        if (temp < 60) {
+            tempColor = '#87CEEB'; // Light blue for cold
+        } else if (temp <= 89) {
+            tempColor = '#FFFF99'; // Yellow for comfortable
+        } else {
+            tempColor = '#FF6B6B'; // Red for hot
+        }
+        this.ctx.fillStyle = tempColor;
+        
+        // Draw text with black outline for visibility
+        this.ctx.strokeText(tempText, x, y);
+        this.ctx.fillText(tempText, x, y);
+    }
+
 
     applyPrivacyBlurring(detectionResult, img) {
         // Scale factors to convert from detection coordinates to main canvas
@@ -2244,14 +2611,32 @@ CROP COORDINATES:
         // Blur detected people
         detectionResult.people.forEach((person, index) => {
             if (person.boundingBox) {
+                // Skip detections with invalid coordinates
+                if (isNaN(person.boundingBox.x) || isNaN(person.boundingBox.y) || 
+                    isNaN(person.boundingBox.width) || isNaN(person.boundingBox.height)) {
+                    console.warn('Skipping detection with invalid coordinates:', person.boundingBox);
+                    return;
+                }
+                
                 const x = person.boundingBox.x * scaleX;
                 const y = person.boundingBox.y * scaleY;
                 const width = person.boundingBox.width * scaleX;
                 const height = person.boundingBox.height * scaleY;
                 
-                console.log(`🫥 Blurring person ${index}: x=${x.toFixed(0)}, y=${y.toFixed(0)}, w=${width.toFixed(0)}, h=${height.toFixed(0)} (confidence: ${(person.confidence * 100).toFixed(1)}%)`);
+                // Check if this is likely a shadow (adjusted region)
+                const normalizedX = x / this.canvas.width;
+                const normalizedY = y / this.canvas.height;
+                const isShadow = normalizedX >= 0.4 && normalizedX <= 0.58 && normalizedY > 0.85;
                 
-                this.blurRoundedRectArea(x, y, width, height);
+                // Mark person object as shadow for display purposes
+                person.isShadow = isShadow;
+                
+                if (isShadow) {
+                    // console.log(`🌑 Skipping blur for shadow ${index}: x=${x.toFixed(0)}, y=${y.toFixed(0)} (${(normalizedX * 100).toFixed(0)}% width, ${(normalizedY * 100).toFixed(0)}% height)`);
+                } else {
+                    console.log(`🫥 Blurring person ${index}: x=${x.toFixed(0)}, y=${y.toFixed(0)}, w=${width.toFixed(0)}, h=${height.toFixed(0)} (confidence: ${(person.confidence * 100).toFixed(1)}%)`);
+                    this.blurRoundedRectArea(x, y, width, height);
+                }
             }
         });
         
@@ -2271,6 +2656,12 @@ CROP COORDINATES:
     }
     
     blurRoundedRectArea(x, y, width, height) {
+        // Validate input parameters
+        if (width <= 0 || height <= 0) {
+            console.warn('Invalid blur input dimensions:', { x, y, width, height });
+            return;
+        }
+        
         // Make blur area 25% bigger for better privacy coverage
         const sizeIncrease = 0.25;
         const expandedWidth = width * (1 + sizeIncrease);
@@ -2292,6 +2683,12 @@ CROP COORDINATES:
         const blurWidth = expandedWidth + (padding * 2);
         const blurHeight = expandedHeight + (padding * 2);
         
+        // Ensure canvas has valid dimensions
+        if (blurWidth <= 0 || blurHeight <= 0) {
+            console.warn('Invalid blur dimensions:', blurWidth, blurHeight, 'for detection:', x, y, width, height);
+            return;
+        }
+        
         tempCanvas.width = blurWidth;
         tempCanvas.height = blurHeight;
         
@@ -2302,10 +2699,21 @@ CROP COORDINATES:
             0, 0, blurWidth, blurHeight
         );
         
+        
+        // Create a separate canvas for blur operation
+        const blurCanvas = document.createElement('canvas');
+        const blurCtx = blurCanvas.getContext('2d');
+        blurCanvas.width = blurWidth;
+        blurCanvas.height = blurHeight;
+        
         // Apply blur scaled to detection size
-        tempCtx.filter = `blur(${blurRadius}px)`;
-        tempCtx.drawImage(tempCanvas, 0, 0);
-        tempCtx.filter = 'none';
+        blurCtx.filter = `blur(${blurRadius}px)`;
+        blurCtx.drawImage(tempCanvas, 0, 0);
+        blurCtx.filter = 'none';
+        
+        // Copy blurred result back to temp canvas
+        tempCtx.clearRect(0, 0, blurWidth, blurHeight);
+        tempCtx.drawImage(blurCanvas, 0, 0);
         
         // Create an alpha mask for soft edges
         const maskCanvas = document.createElement('canvas');
@@ -2355,23 +2763,38 @@ CROP COORDINATES:
         }
         
         try {
-            // Create offscreen canvas 960x540
-            const offscreenCanvas = new OffscreenCanvas(960, 540);
-            const offscreenCtx = offscreenCanvas.getContext('2d');
+            // Create detection canvas once or resize if needed
+            if (!this.detectionCanvas) {
+                this.detectionCanvas = document.createElement('canvas');
+                this.detectionCtx = this.detectionCanvas.getContext('2d');
+            }
             
-            // Draw scaled image to offscreen canvas
-            offscreenCtx.drawImage(img, 0, 0, 960, 540);
+            // Resize canvas if image size changed
+            if (this.detectionCanvas.width !== img.width || this.detectionCanvas.height !== img.height) {
+                this.detectionCanvas.width = img.width;
+                this.detectionCanvas.height = img.height;
+            }
             
-            // Get image data for worker
-            const imageData = offscreenCtx.getImageData(0, 0, 960, 540);
+            // Convert image to ImageData for worker (can't send HTMLImageElement)
+            this.detectionCtx.drawImage(img, 0, 0);
+            const imageData = this.detectionCtx.getImageData(0, 0, img.width, img.height);
             
-            // Calculate scale factor (original image size vs 960x540)
-            const scaleX = img.width / 960;
-            const scaleY = img.height / 540;
-            const scale = { x: scaleX, y: scaleY };
+            // Send full resolution ImageData to worker
+            const scale = { x: 1, y: 1 }; // No scaling needed for full resolution
+            const detectionResult = await this.workerRpc.methods.detectPeople(imageData, scale, timestamp);
             
-            // Send to worker for detection with transferable objects
-            const detectionResult = await this.workerRpc.methodsExt.detectPeople(imageData, scale, timestamp, { postMessageOptions: { transfer: [imageData.data.buffer] } });
+            // Mark shadows before displaying detections
+            if (detectionResult && detectionResult.people) {
+                detectionResult.people.forEach((person) => {
+                    if (person.boundingBox) {
+                        // Check if this is likely a shadow (adjusted region)
+                        const normalizedX = person.boundingBox.x / img.width;
+                        const normalizedY = person.boundingBox.y / img.height;
+                        const isShadow = normalizedX >= 0.4 && normalizedX <= 0.58 && normalizedY > 0.85;
+                        person.isShadow = isShadow;
+                    }
+                });
+            }
             
             // Only show detections if we got actual results, not fallback responses
             if (!detectionResult.fallback && (detectionResult.people.length > 0 || detectionResult.faces.length > 0)) {
@@ -2466,7 +2889,7 @@ CROP COORDINATES:
         // Process people detections
         detectionResult.people.forEach((person, index) => {
             if (person.boundingBox) {
-                const detectionItem = this.createDetectionItem(img, person.boundingBox, `person-${index}`, 'person', person.confidence);
+                const detectionItem = this.createDetectionItem(img, person.boundingBox, `person-${index}`, 'person', person.confidence, person.isShadow);
                 if (detectionItem) {
                     container.appendChild(detectionItem);
                 }
@@ -2482,7 +2905,7 @@ CROP COORDINATES:
         container.scrollTop = container.scrollHeight;
     }
 
-    createDetectionItem(img, boundingBox, label, type, confidence = 1.0) {
+    createDetectionItem(img, boundingBox, label, type, confidence = 1.0, isShadow = false) {
         try {
             // Add padding around the bounding box
             const padding = 20;
@@ -2505,6 +2928,21 @@ CROP COORDINATES:
                 x, y, width, height,  // Source rectangle
                 0, 0, width, height   // Destination rectangle
             );
+            
+            // If it's a shadow, draw red border and X
+            if (isShadow) {
+                cropCtx.strokeStyle = 'red';
+                cropCtx.lineWidth = 3;
+                cropCtx.strokeRect(0, 0, width, height);
+                
+                // Draw red X
+                cropCtx.beginPath();
+                cropCtx.moveTo(0, 0);
+                cropCtx.lineTo(width, height);
+                cropCtx.moveTo(width, 0);
+                cropCtx.lineTo(0, height);
+                cropCtx.stroke();
+            }
 
             // Convert canvas to image
             const croppedImg = document.createElement('img');
@@ -2512,7 +2950,7 @@ CROP COORDINATES:
 
             // Create the detection item container
             const detectionItem = document.createElement('div');
-            detectionItem.className = `detection-item ${type}`;
+            detectionItem.className = `detection-item ${type}${isShadow ? ' shadow' : ''}`;
             
             // Add the image
             detectionItem.appendChild(croppedImg);
@@ -2520,7 +2958,8 @@ CROP COORDINATES:
             // Add info overlay
             const infoDiv = document.createElement('div');
             infoDiv.className = 'detection-info';
-            infoDiv.textContent = `${label} (${(confidence * 100).toFixed(1)}%) - ${boundingBox.width.toFixed(0)}×${boundingBox.height.toFixed(0)}`;
+            const shadowLabel = isShadow ? ' [SHADOW]' : '';
+            infoDiv.textContent = `${label}${shadowLabel} (${(confidence * 100).toFixed(1)}%) - ${boundingBox.width.toFixed(0)}×${boundingBox.height.toFixed(0)}`;
             detectionItem.appendChild(infoDiv);
 
             return detectionItem;
