@@ -2421,7 +2421,28 @@ CROP COORDINATES:
         }
         
         // Format speed to 1 decimal place
-        const speedString = `bike ${speed.toFixed(1)} ${units}`;
+        let speedString = `bike ${speed.toFixed(1)} ${units}`;
+        
+        // Add emoji for different speed ranges
+        if (this.altitudeUnit === 'ft') {
+            // MPH thresholds
+            if (speed >= 30) {
+                speedString += ' 🚀';
+            } else if (speed >= 25) {
+                speedString += ' 😄';
+            } else if (speed >= 22) {
+                speedString += ' 😃';
+            }
+        } else {
+            // KM/H thresholds (22 mph ≈ 35.4 km/h, 25 mph ≈ 40.2 km/h, 30 mph ≈ 48.3 km/h)
+            if (speed >= 48.3) {
+                speedString += ' 🚀';
+            } else if (speed >= 40.2) {
+                speedString += ' 😄';
+            } else if (speed >= 35.4) {
+                speedString += ' 😃';
+            }
+        }
         
         // Set up text styling (same size as date/time)
         const fontSize = Math.floor(this.canvas.width / 40);
